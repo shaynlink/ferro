@@ -14,7 +14,17 @@ path = "src/main.rs"
 [dependencies]
 ferro-application = { path = "../../crates/ferro-application" }
 ferro-state = { path = "../../crates/ferro-state" }
+objc2 = "0.6.5"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
 
-[lints]
-workspace = true
+[lints.rust]
+# AppKit construction crosses an FFI boundary. Keep unsafe isolated to this host crate.
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
 
