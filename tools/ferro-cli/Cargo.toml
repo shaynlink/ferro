@@ -1,0 +1,16 @@
+[package]
+name = "ferro"
+description = "Terminal-first developer tools for Ferro."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ferro"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+

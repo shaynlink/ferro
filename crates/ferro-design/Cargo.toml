@@ -1,0 +1,12 @@
+[package]
+name = "ferro-design"
+description = "Semantic design tokens shared by native Ferro surfaces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+

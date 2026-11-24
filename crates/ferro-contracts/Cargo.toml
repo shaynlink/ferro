@@ -1,0 +1,15 @@
+[package]
+name = "ferro-contracts"
+description = "Platform-neutral ports implemented by Ferro adapters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferro-domain = { path = "../ferro-domain" }
+
+[lints]
+workspace = true
+

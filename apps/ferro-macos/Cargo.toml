@@ -1,0 +1,20 @@
+[package]
+name = "ferro-macos"
+description = "Native macOS desktop shell for Ferro."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ferro-macos"
+path = "src/main.rs"
+
+[dependencies]
+ferro-application = { path = "../../crates/ferro-application" }
+ferro-state = { path = "../../crates/ferro-state" }
+
+[lints]
+workspace = true
+
