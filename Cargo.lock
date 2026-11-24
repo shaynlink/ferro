@@ -37,6 +37,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-contracts",
  "ferro-domain",
+ "ferro-testkit",
 ]
 
 [[package]]
@@ -67,6 +68,8 @@ name = "ferro-macos"
 version = "0.1.0"
 dependencies = [
  "ferro-application",
+ "ferro-contracts",
+ "ferro-domain",
  "ferro-state",
  "objc2",
  "objc2-app-kit",

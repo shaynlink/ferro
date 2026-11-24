@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 ferro-application = { path = "../../crates/ferro-application" }
+ferro-contracts = { path = "../../crates/ferro-contracts" }
+ferro-domain = { path = "../../crates/ferro-domain" }
 ferro-state = { path = "../../crates/ferro-state" }
 objc2 = "0.6.5"
 objc2-app-kit = "0.3.2"

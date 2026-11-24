@@ -85,7 +85,7 @@ validation on the target OS, not only cross-compilation.
 
 ## Near-term milestones
 
-1. Replace the empty macOS window with a workspace-list vertical slice.
-2. Implement a local recent-workspace persistence adapter and test it against the shared contract.
+1. Implement a local recent-workspace persistence adapter and test it against the shared contract.
+2. Add native file selection and workspace opening to the macOS host.
 3. Define the release artifact strategy for `.dmg`, Windows installer/MSIX, and Flatpak.
 4. Perform isolated GTK4 and WinUI feasibility spikes before adding their production host crates.

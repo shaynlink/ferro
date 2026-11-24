@@ -11,6 +11,9 @@ repository.workspace = true
 ferro-contracts = { path = "../ferro-contracts" }
 ferro-domain = { path = "../ferro-domain" }
 
+[dev-dependencies]
+ferro-testkit = { path = "../ferro-testkit" }
+
 [lints]
 workspace = true
 

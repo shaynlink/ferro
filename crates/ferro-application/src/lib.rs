@@ -22,3 +22,28 @@ pub struct RecentWorkspaces {
     /// Workspaces in display order.
     pub workspaces: Vec<Workspace>,
 }
+
+#[cfg(test)]
+mod tests {
+    use ferro_domain::Workspace;
+    use ferro_testkit::MemoryRecentWorkspaceStore;
+
+    use super::load_recent_workspaces;
+
+    #[test]
+    fn loads_recent_workspaces_in_store_order() {
+        let first = Workspace::new("Ferro", "/workspace/ferro").expect("valid fixture");
+        let second = Workspace::new("Atlas", "/workspace/atlas").expect("valid fixture");
+        let store = MemoryRecentWorkspaceStore::with_workspaces(vec![first.clone(), second]);
+
+        let model = load_recent_workspaces(&store).expect("the memory store cannot fail");
+
+        assert_eq!(
+            model.workspaces,
+            vec![
+                first,
+                Workspace::new("Atlas", "/workspace/atlas").expect("valid fixture")
+            ]
+        );
+    }
+}

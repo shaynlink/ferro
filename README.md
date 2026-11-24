@@ -43,9 +43,9 @@ implementation strategy.
 
 ## Status
 
-Ferro is in bootstrap. The Rust workspace, quality gates, CI matrix, CLI foundation, and minimal
-AppKit window host exist. The first functional milestone is a native macOS workspace-list screen
-backed by the shared application layer.
+Ferro is in bootstrap. The Rust workspace, quality gates, CI matrix, CLI foundation, and native
+AppKit workspace-list screen exist. The current screen uses a host-local in-memory adapter; the
+next milestone is durable recent-workspace persistence behind the same shared contract.
 
 ## Prerequisites
 
@@ -79,8 +79,8 @@ cargo run -p ferro-macos
 
 ## Roadmap
 
-1. Build the native macOS workspace-list vertical slice.
-2. Add persistent adapters and contract tests.
+1. Add persistent adapters and contract tests.
+2. Add native file selection and workspace opening to the macOS host.
 3. Validate GTK4/Linux and Windows native hosts through dedicated spikes.
 4. Package, test, and release a desktop beta on all three operating systems.
 
