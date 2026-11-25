@@ -105,8 +105,34 @@ impl ApplicationDescriptor {
 /// Target runtimes obtain portable application metadata through this trait, then retain ownership
 /// of native lifecycle and presentation behaviour.
 pub trait Application {
+    /// State rendered by native target hosts.
+    type State;
+    /// Input accepted by the application's reducer.
+    type Event;
+    /// Target work requested by the reducer after a state transition.
+    type Effect;
+
     /// Returns the application's stable descriptor.
     fn descriptor() -> ApplicationDescriptor;
+
+    /// Returns the state used before the first lifecycle event.
+    fn initial_state() -> Self::State;
+
+    /// Applies an event and returns ordered target effects.
+    fn reduce(state: &mut Self::State, event: Self::Event) -> Vec<Self::Effect>;
+}
+
+/// Lifecycle phase emitted by a native application runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Lifecycle {
+    /// The native runtime completed its initial launch.
+    Launched,
+    /// The application became active.
+    Activated,
+    /// The application stopped being active.
+    Deactivated,
+    /// The application is about to terminate.
+    Terminating,
 }
 
 #[cfg(test)]
@@ -116,8 +142,21 @@ mod tests {
     struct Atlas;
 
     impl Application for Atlas {
+        type State = usize;
+        type Event = usize;
+        type Effect = &'static str;
+
         fn descriptor() -> ApplicationDescriptor {
             ApplicationDescriptor::new("Atlas", "dev.ferro.atlas")
+        }
+
+        fn initial_state() -> Self::State {
+            0
+        }
+
+        fn reduce(state: &mut Self::State, event: Self::Event) -> Vec<Self::Effect> {
+            *state += event;
+            vec!["render"]
         }
     }
 
@@ -140,5 +179,12 @@ mod tests {
     fn applications_expose_portable_metadata() {
         assert_eq!(Atlas::descriptor().name(), "Atlas");
         assert_eq!(Atlas::descriptor().id(), "dev.ferro.atlas");
+    }
+
+    #[test]
+    fn applications_expose_a_pure_state_transition() {
+        let mut state = Atlas::initial_state();
+        assert_eq!(Atlas::reduce(&mut state, 2), ["render"]);
+        assert_eq!(state, 2);
     }
 }

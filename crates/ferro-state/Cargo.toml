@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 ferro-domain = { path = "../ferro-domain" }
+ferro-sdk = { path = "../ferro-sdk" }
 
 [lints]
 workspace = true
