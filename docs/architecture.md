@@ -102,5 +102,7 @@ its generated host implements a typed reducer contract and delegates lifecycle, 
 menus and presentation to the AppKit runtime. The CLI assembles the Cargo executable into a local
 `.app`, optionally signs it with a configured keychain identity, and keeps signing policy outside
 the shared SDK. The runtime confines Objective-C delegate objects and UI state to the main thread.
-The next architectural milestone is notarized distribution on macOS and equivalent native
-development targets on Windows and Linux.
+Direct macOS distribution now remains in target tooling: the CLI prepares an arm64 Developer ID
+bundle, then can notarize a DMG or ZIP through `notarytool`. It does not add sandbox policy or App
+Store entitlement abstractions to the shared SDK. The next architectural milestones are App Store
+distribution and equivalent native development targets on Windows and Linux.

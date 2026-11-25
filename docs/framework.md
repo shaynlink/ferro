@@ -43,9 +43,11 @@ intended split: its core owns a typed state, events and a pure reducer; its macO
 views, native commands and file-panel effects.
 
 Bundles are unsigned by default for local development. An optional `[macos] signing_identity` (or
-`--sign`) selects an identity already installed in the macOS keychain. `ferro doctor` checks Rust,
-Cargo, Xcode, code-signing tools, the generated host and any configured identity. Notarization,
-installable distribution and publishing remain out of scope.
+`--sign`) selects an identity already installed in the macOS keychain. Schema-2 projects can then
+use `ferro package macos --arch arm64` for a Developer ID release DMG or ZIP, with optional
+notarization using a local `notarytool` Keychain profile. `ferro doctor` checks Rust, Cargo, Xcode,
+code-signing tools, the generated host and any configured identity. App Store sandboxing,
+entitlements, validation and submission remain out of scope.
 
 ## Stable developer API
 

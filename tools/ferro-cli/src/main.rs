@@ -6,7 +6,7 @@ use std::process::Command as ProcessCommand;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use ferro_contracts::WorkspaceMaintenance;
 use ferro_project::{ProjectError, ProjectManifest};
 use ferro_sdk::Target;
@@ -69,6 +69,32 @@ enum Command {
         #[arg(long)]
         sign: Option<String>,
     },
+    /// Create a signed macOS distribution artifact.
+    Package {
+        /// Target to package.
+        target: Target,
+        /// Project directory containing ferro.toml.
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Distribution architecture. Only Apple Silicon is supported.
+        #[arg(long, value_enum)]
+        arch: MacosArchitecture,
+        /// Distribution container format.
+        #[arg(long, value_enum, default_value_t = PackageFormat::Dmg)]
+        format: PackageFormat,
+        /// Directory in which to write the signed app and distribution artifact.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Developer ID Application signing identity.
+        #[arg(long)]
+        sign: Option<String>,
+        /// Submit the artifact to Apple's notary service and staple its ticket.
+        #[arg(long)]
+        notarize: bool,
+        /// Keychain profile previously stored with xcrun notarytool.
+        #[arg(long, requires = "notarize")]
+        notary_profile: Option<String>,
+    },
     /// Build, launch, and restart a native target when its sources change.
     Dev {
         /// Project directory containing ferro.toml.
@@ -115,10 +141,33 @@ fn main() {
                 release,
                 output,
                 signing_identity: sign,
+                target_triple: None,
             },
         )
         .map(|bundle| println!("Built {}", bundle.path.display())),
         Command::Dev { project, target } => develop_project(&project, target),
+        Command::Package {
+            target,
+            project,
+            arch,
+            format,
+            output,
+            sign,
+            notarize,
+            notary_profile,
+        } => package_project(
+            &project,
+            target,
+            PackageOptions {
+                arch,
+                format,
+                output,
+                signing_identity: sign,
+                notarize,
+                notary_profile,
+            },
+        )
+        .map(|artifact| println!("Packaged {}", artifact.display())),
         Command::Target {
             command: TargetCommand::List,
         } => {
@@ -142,7 +191,16 @@ fn init_project(path: &Path, id: Option<String>, targets: Vec<Target>) -> Result
     }
     let slug = project_slug(path)?;
     let id = id.unwrap_or_else(|| format!("dev.ferro.{slug}"));
-    let manifest = ProjectManifest::new(&slug, id, targets).map_err(|error| error.to_string())?;
+    let mut manifest =
+        ProjectManifest::new(&slug, id, targets).map_err(|error| error.to_string())?;
+    if manifest.targets().contains(&Target::Macos) {
+        manifest = manifest
+            .with_macos_assets(
+                Some(PathBuf::from("assets/macos/AppIcon.icns")),
+                Some(PathBuf::from("assets/macos/resources")),
+            )
+            .map_err(|error| error.to_string())?;
+    }
 
     fs::create_dir_all(path).map_err(|error| {
         format!(
@@ -155,6 +213,13 @@ fn init_project(path: &Path, id: Option<String>, targets: Vec<Target>) -> Result
         &path.join("Cargo.toml"),
         &render_workspace_manifest(&slug, manifest.targets()),
     )?;
+    if manifest.targets().contains(&Target::Macos) {
+        write_file(&path.join("assets/macos/resources/.gitkeep"), "")?;
+        write_file(
+            &path.join("assets/macos/README.md"),
+            "# macOS distribution assets\n\nAdd a production `AppIcon.icns` before running `ferro package macos --arch arm64`. Files in `resources/` are copied to `Contents/Resources`. Keep them static data: frameworks, plug-ins, executables and symlinks are not supported in this distribution phase.\n",
+        )?;
+    }
     write_file(
         &path.join("README.md"),
         &render_project_readme(&slug, manifest.application().id(), manifest.targets()),
@@ -212,6 +277,19 @@ fn doctor(project: &Path) -> Result<(), String> {
             &["--find", "codesign"],
             &mut failures,
         );
+        inspect_tool(
+            "Notary tool",
+            "xcrun",
+            &["--find", "notarytool"],
+            &mut failures,
+        );
+        inspect_tool("Stapler", "xcrun", &["--find", "stapler"], &mut failures);
+        inspect_tool(
+            "Disk image tool",
+            "xcrun",
+            &["--find", "hdiutil"],
+            &mut failures,
+        );
     } else {
         failures.push("macOS builds require a macOS host with Xcode".to_owned());
         println!("- Xcode: unavailable (macOS host required)");
@@ -241,6 +319,7 @@ fn doctor(project: &Path) -> Result<(), String> {
                 }
             }
             inspect_signing_identity(manifest.macos().signing_identity(), &mut failures);
+            inspect_distribution_configuration(project, &manifest);
         }
         Err(ProjectError::Read { error, .. }) if error.kind() == std::io::ErrorKind::NotFound => {
             println!("- Project: no ferro.toml at {}", manifest_path.display());
@@ -273,11 +352,61 @@ fn run_project(project: &Path, target: Target) -> Result<(), String> {
     }
 }
 
+/// macOS architecture accepted for distributable artifacts.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MacosArchitecture {
+    /// Apple Silicon, compiled as aarch64-apple-darwin.
+    Arm64,
+}
+
+impl MacosArchitecture {
+    const fn target_triple(self) -> &'static str {
+        match self {
+            Self::Arm64 => "aarch64-apple-darwin",
+        }
+    }
+
+    const fn display_name(self) -> &'static str {
+        match self {
+            Self::Arm64 => "arm64",
+        }
+    }
+}
+
+/// Container format for a direct macOS distribution.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PackageFormat {
+    /// Apple disk image.
+    Dmg,
+    /// ZIP archive containing the app bundle.
+    Zip,
+}
+
+impl PackageFormat {
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Dmg => "dmg",
+            Self::Zip => "zip",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct BuildOptions {
     release: bool,
     output: Option<PathBuf>,
     signing_identity: Option<String>,
+    target_triple: Option<&'static str>,
+}
+
+#[derive(Clone, Debug)]
+struct PackageOptions {
+    arch: MacosArchitecture,
+    format: PackageFormat,
+    output: Option<PathBuf>,
+    signing_identity: Option<String>,
+    notarize: bool,
+    notary_profile: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -295,6 +424,10 @@ fn build_project(
     let package = format!("{slug}-{target}");
     let mut command = ProcessCommand::new("cargo");
     command.args(["build", "--package", &package]);
+    if let Some(target_triple) = options.target_triple {
+        command.args(["--target", target_triple]);
+        command.env("RUSTFLAGS", "-C target-cpu=apple-m1");
+    }
     if options.release {
         command.arg("--release");
     }
@@ -309,7 +442,11 @@ fn build_project(
     }
 
     let profile = if options.release { "release" } else { "debug" };
-    let executable = project.join("target").join(profile).join(&package);
+    let executable_directory = options.target_triple.map_or_else(
+        || project.join("target").join(profile),
+        |target_triple| project.join("target").join(target_triple).join(profile),
+    );
+    let executable = executable_directory.join(&package);
     if !executable.is_file() {
         return Err(format!(
             "Cargo completed but did not produce the expected executable `{}`",
@@ -334,6 +471,390 @@ fn build_project(
             .as_deref()
             .or(manifest.macos().signing_identity()),
     )
+}
+
+fn package_project(
+    project: &Path,
+    target: Target,
+    options: PackageOptions,
+) -> Result<PathBuf, String> {
+    let (manifest, _) = load_macos_project(project, target)?;
+    if manifest.schema() != ferro_project::CURRENT_SCHEMA {
+        return Err(
+            "ferro package requires a schema 2 ferro.toml with app.version and app.build_number"
+                .to_owned(),
+        );
+    }
+    let version = manifest.version().expect("schema 2 requires a version");
+    let build_number = manifest
+        .build_number()
+        .expect("schema 2 requires a build number");
+    let icon = required_project_asset(project, manifest.macos().icon(), "macos.icon")?;
+    validate_icns(&icon)?;
+    let resources = required_project_asset(
+        project,
+        manifest.macos().resources_dir(),
+        "macos.resources_dir",
+    )?;
+    if !resources.is_dir() {
+        return Err(format!(
+            "macos.resources_dir `{}` is not a directory",
+            resources.display()
+        ));
+    }
+    let signing_identity = options
+        .signing_identity
+        .as_deref()
+        .or(manifest.macos().signing_identity())
+        .ok_or_else(|| "ferro package requires a Developer ID Application identity via --sign or macos.signing_identity".to_owned())?;
+    if !signing_identity.starts_with("Developer ID Application:") {
+        return Err("ferro package requires a Developer ID Application identity".to_owned());
+    }
+    if options.notarize && options.notary_profile.is_none() {
+        return Err("--notarize requires --notary-profile <keychain-profile>".to_owned());
+    }
+
+    let output = options
+        .output
+        .unwrap_or_else(|| project.join("dist").join("macos"));
+    let bundle_output = output.join("bundle");
+    let bundle = build_project(
+        project,
+        target,
+        BuildOptions {
+            release: true,
+            output: Some(bundle_output),
+            signing_identity: None,
+            target_triple: Some(options.arch.target_triple()),
+        },
+    )?;
+    prepare_distribution_bundle(&bundle, &icon, &resources, version, build_number)?;
+    sign_distribution_bundle(&bundle.path, signing_identity)?;
+    verify_apple_silicon(&bundle.executable)?;
+
+    fs::create_dir_all(&output).map_err(|error| {
+        format!(
+            "could not create distribution output `{}`: {error}",
+            output.display()
+        )
+    })?;
+    let artifact_stem = format!(
+        "{}-{}-{}",
+        safe_bundle_name(manifest.application().name()),
+        version,
+        options.arch.display_name()
+    );
+    let artifact = output.join(format!("{artifact_stem}.{}", options.format.extension()));
+    create_distribution_artifact(
+        options.format,
+        &bundle.path,
+        &artifact,
+        manifest.application().name(),
+    )?;
+    if options.notarize {
+        notarize_artifact(
+            &artifact,
+            options.notary_profile.as_deref().expect("checked above"),
+        )?;
+        match options.format {
+            PackageFormat::Dmg => staple_and_validate(&artifact)?,
+            PackageFormat::Zip => {
+                staple_and_validate(&bundle.path)?;
+                create_distribution_artifact(
+                    PackageFormat::Zip,
+                    &bundle.path,
+                    &artifact,
+                    manifest.application().name(),
+                )?;
+            }
+        }
+        assess_distribution(&artifact)?;
+    }
+    Ok(artifact)
+}
+
+fn required_project_asset(
+    project: &Path,
+    path: Option<&Path>,
+    key: &str,
+) -> Result<PathBuf, String> {
+    let path = path.ok_or_else(|| format!("ferro package requires {key} in ferro.toml"))?;
+    let resolved = project.join(path);
+    if resolved.exists() {
+        Ok(resolved)
+    } else {
+        Err(format!("{key} does not exist at `{}`", resolved.display()))
+    }
+}
+
+fn validate_icns(icon: &Path) -> Result<(), String> {
+    if icon.extension().is_none_or(|extension| extension != "icns") {
+        return Err(format!(
+            "macos.icon `{}` must be an .icns file",
+            icon.display()
+        ));
+    }
+    let bytes = fs::read(icon)
+        .map_err(|error| format!("could not read icon `{}`: {error}", icon.display()))?;
+    if bytes.len() < 8 || &bytes[..4] != b"icns" {
+        return Err(format!(
+            "macos.icon `{}` is not a valid ICNS file",
+            icon.display()
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_distribution_bundle(
+    bundle: &BuiltBundle,
+    icon: &Path,
+    resources: &Path,
+    version: &str,
+    build_number: u64,
+) -> Result<(), String> {
+    let contents = bundle.path.join("Contents");
+    let resource_destination = contents.join("Resources");
+    fs::create_dir_all(&resource_destination)
+        .map_err(|error| format!("could not create bundle resources: {error}"))?;
+    fs::copy(icon, resource_destination.join("AppIcon.icns"))
+        .map_err(|error| format!("could not copy macOS icon: {error}"))?;
+    copy_static_resources(resources, &resource_destination)?;
+    let plist = distribution_info_plist(&bundle.path, version, build_number)?;
+    fs::write(contents.join("Info.plist"), plist)
+        .map_err(|error| format!("could not write distribution Info.plist: {error}"))
+}
+
+fn distribution_info_plist(
+    bundle: &Path,
+    version: &str,
+    build_number: u64,
+) -> Result<String, String> {
+    let plist = fs::read_to_string(bundle.join("Contents/Info.plist"))
+        .map_err(|error| format!("could not read bundle Info.plist: {error}"))?;
+    let insertion = "  <key>CFBundleIconFile</key>\n  <string>AppIcon</string>\n  <key>LSMinimumSystemVersion</key>\n  <string>11.0</string>\n  <key>CFBundleSupportedPlatforms</key>\n  <array><string>MacOSX</string></array>\n".to_owned();
+    let plist = plist.replace(
+        "  <key>CFBundleShortVersionString</key>\n  <string>0.1.0</string>\n",
+        &format!(
+            "  <key>CFBundleShortVersionString</key>\n  <string>{}</string>\n",
+            xml_escape(version)
+        ),
+    );
+    let plist = plist.replace(
+        "  <key>CFBundleVersion</key>\n  <string>1</string>\n",
+        &format!("  <key>CFBundleVersion</key>\n  <string>{build_number}</string>\n"),
+    );
+    Ok(plist.replace("</dict>", &format!("{insertion}</dict>")))
+}
+
+fn copy_static_resources(source: &Path, destination: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("could not read resources `{}`: {error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("could not inspect a resource: {error}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("could not inspect `{}`: {error}", path.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "resources cannot contain symlinks (`{}`)",
+                path.display()
+            ));
+        }
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            fs::create_dir_all(&target)
+                .map_err(|error| format!("could not create resource directory: {error}"))?;
+            copy_static_resources(&path, &target)?;
+        } else if file_type.is_file() {
+            if is_executable_file(&path)? {
+                return Err(format!(
+                    "resources cannot contain executable files (`{}`)",
+                    path.display()
+                ));
+            }
+            fs::copy(&path, &target).map_err(|error| {
+                format!("could not copy resource `{}`: {error}", path.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> Result<bool, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path)
+        .map_err(|error| format!("could not inspect resource `{}`: {error}", path.display()))?
+        .permissions()
+        .mode();
+    Ok(mode & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
+fn is_executable_file(_path: &Path) -> Result<bool, String> {
+    Ok(false)
+}
+
+fn sign_distribution_bundle(bundle: &Path, identity: &str) -> Result<(), String> {
+    run_checked(
+        ProcessCommand::new("codesign")
+            .args([
+                "--force",
+                "--sign",
+                identity,
+                "--options",
+                "runtime",
+                "--timestamp",
+            ])
+            .arg(bundle),
+        "could not sign Developer ID application",
+    )?;
+    run_checked(
+        ProcessCommand::new("codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(bundle),
+        "Developer ID signature verification failed",
+    )
+}
+
+fn verify_apple_silicon(executable: &Path) -> Result<(), String> {
+    let output = ProcessCommand::new("lipo")
+        .args(["-archs"])
+        .arg(executable)
+        .output()
+        .map_err(|error| format!("could not inspect bundle architecture: {error}"))?;
+    if output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .any(|arch| arch == "arm64")
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "distribution bundle is not Apple Silicon arm64: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+fn create_distribution_artifact(
+    format: PackageFormat,
+    bundle: &Path,
+    artifact: &Path,
+    name: &str,
+) -> Result<(), String> {
+    if artifact.exists() {
+        fs::remove_file(artifact)
+            .map_err(|error| format!("could not replace `{}`: {error}", artifact.display()))?;
+    }
+    match format {
+        PackageFormat::Dmg => run_checked(
+            ProcessCommand::new("hdiutil")
+                .args([
+                    "create",
+                    "-ov",
+                    "-format",
+                    "UDZO",
+                    "-volname",
+                    name,
+                    "-srcfolder",
+                ])
+                .arg(bundle)
+                .arg(artifact),
+            "could not create distribution DMG",
+        ),
+        PackageFormat::Zip => run_checked(
+            ProcessCommand::new("ditto")
+                .args(["-c", "-k", "--keepParent"])
+                .arg(bundle)
+                .arg(artifact),
+            "could not create distribution ZIP",
+        ),
+    }
+}
+
+fn notarize_artifact(artifact: &Path, profile: &str) -> Result<(), String> {
+    let output = ProcessCommand::new("xcrun")
+        .args(["notarytool", "submit"])
+        .arg(artifact)
+        .args([
+            "--wait",
+            "--keychain-profile",
+            profile,
+            "--output-format",
+            "json",
+        ])
+        .output()
+        .map_err(|error| format!("could not start notarytool: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let details = String::from_utf8_lossy(&output.stdout);
+    let submission = json_string_field(&details, "id");
+    if let Some(submission) = submission {
+        let _ = ProcessCommand::new("xcrun")
+            .args([
+                "notarytool",
+                "log",
+                &submission,
+                "--keychain-profile",
+                profile,
+            ])
+            .status();
+    }
+    Err(format!(
+        "notarytool rejected `{}`: {}",
+        artifact.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+fn json_string_field(source: &str, key: &str) -> Option<String> {
+    let marker = format!("\"{key}\":\"");
+    source
+        .split(&marker)
+        .nth(1)?
+        .split('"')
+        .next()
+        .map(str::to_owned)
+}
+
+fn staple_and_validate(path: &Path) -> Result<(), String> {
+    run_checked(
+        ProcessCommand::new("xcrun")
+            .args(["stapler", "staple"])
+            .arg(path),
+        "could not staple notarization ticket",
+    )?;
+    run_checked(
+        ProcessCommand::new("xcrun")
+            .args(["stapler", "validate"])
+            .arg(path),
+        "could not validate notarization ticket",
+    )
+}
+
+fn assess_distribution(artifact: &Path) -> Result<(), String> {
+    run_checked(
+        ProcessCommand::new("spctl")
+            .args(["--assess", "--type", "open", "--verbose=4"])
+            .arg(artifact),
+        "Gatekeeper assessment failed",
+    )
+}
+
+fn run_checked(command: &mut ProcessCommand, context: &str) -> Result<(), String> {
+    let status = command
+        .status()
+        .map_err(|error| format!("{context}: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{context} ({status})"))
+    }
 }
 
 fn load_macos_project(project: &Path, target: Target) -> Result<(ProjectManifest, String), String> {
@@ -647,6 +1168,37 @@ fn inspect_signing_identity(identity: Option<&str>, failures: &mut Vec<String>) 
     }
 }
 
+fn inspect_distribution_configuration(project: &Path, manifest: &ProjectManifest) {
+    if manifest.schema() != ferro_project::CURRENT_SCHEMA {
+        println!(
+            "- Distribution: unavailable (schema 2 metadata required; local development remains supported)"
+        );
+        return;
+    }
+    let icon = manifest
+        .macos()
+        .icon()
+        .map(|path| project.join(path))
+        .filter(|path| path.is_file());
+    let resources = manifest
+        .macos()
+        .resources_dir()
+        .map(|path| project.join(path))
+        .filter(|path| path.is_dir());
+    match (icon, resources) {
+        (Some(icon), Some(resources)) => println!(
+            "- Distribution: ready (version {} build {}, icon {}, resources {})",
+            manifest.version().unwrap_or("unknown"),
+            manifest.build_number().unwrap_or_default(),
+            icon.display(),
+            resources.display()
+        ),
+        _ => println!(
+            "- Distribution: incomplete (add the configured ICNS icon and resources directory before ferro package)"
+        ),
+    }
+}
+
 fn list_targets() {
     println!("Ferro targets");
     for target in Target::all() {
@@ -656,7 +1208,9 @@ fn list_targets() {
 
 fn target_status(target: Target) -> &'static str {
     match target {
-        Target::Macos => "supported for local development and Debug/Release .app bundles on macOS",
+        Target::Macos => {
+            "supported for local development, .app bundles, and arm64 Developer ID distribution on macOS"
+        }
         Target::Windows | Target::Linux => "declarable; native runtime is not implemented",
     }
 }
@@ -776,7 +1330,7 @@ fn framework_crate_path(relative: &str) -> String {
 
 fn render_project_readme(slug: &str, id: &str, targets: &[Target]) -> String {
     format!(
-        "# {slug}\n\nFerro application scaffold.\n\n- Application id: `{id}`\n- Declared targets: {}\n\nOn macOS, `ferro doctor --project .` verifies Rust, Xcode and this project. `ferro run --project .` creates a Debug `.app` bundle and launches it. `ferro dev --project .` watches Rust and Cargo sources, then rebuilds and relaunches after a successful change. `ferro build macos --project .` writes a Debug bundle under `target/ferro/macos/debug`; add `--release` for an optimized bundle or `--output <directory>` to choose another directory. Local bundles are unsigned unless `[macos] signing_identity` is configured in `ferro.toml` or `--sign <identity>` is supplied. Enable optional LiliaDB-backed preferences and recents with `cargo run -p {slug}-macos --features persistence`. SQLite is not supported. Notarization and distribution are not included.\n",
+        "# {slug}\n\nFerro application scaffold.\n\n- Application id: `{id}`\n- Declared targets: {}\n\nOn macOS, `ferro doctor --project .` verifies Rust, Xcode and this project. `ferro run --project .` creates a Debug `.app` bundle and launches it. `ferro dev --project .` watches Rust and Cargo sources, then rebuilds and relaunches after a successful change. `ferro build macos --project .` writes a Debug bundle under `target/ferro/macos/debug`; add `--release` for an optimized bundle or `--output <directory>` to choose another directory.\n\nFor direct distribution, add a production `assets/macos/AppIcon.icns`, keep static files under `assets/macos/resources`, configure a `Developer ID Application` identity in `[macos]`, then run `ferro package macos --arch arm64 --notarize --notary-profile <profile>`. This creates a signed DMG by default; use `--format zip` when required. App Store sandboxing and entitlements are not part of this project.\n\nEnable optional LiliaDB-backed preferences and recents with `cargo run -p {slug}-macos --features persistence`. SQLite is not supported.\n",
         join_targets(targets)
     )
 }
@@ -796,7 +1350,7 @@ mod tests {
 
     use super::{
         Cli, Command, assemble_macos_bundle, init_project, load_macos_project, macos_info_plist,
-        project_slug, safe_bundle_name, watch_fingerprint,
+        prepare_distribution_bundle, project_slug, safe_bundle_name, watch_fingerprint,
     };
 
     #[test]
@@ -808,6 +1362,9 @@ mod tests {
 
         let manifest = ProjectManifest::load(project.join("ferro.toml")).expect("project manifest");
         assert_eq!(manifest.application().id(), "dev.ferro.atlas-app");
+        assert_eq!(manifest.schema(), 2);
+        assert_eq!(manifest.version(), Some("0.1.0"));
+        assert_eq!(manifest.build_number(), Some(1));
         assert_eq!(manifest.targets(), [ferro_sdk::Target::Macos]);
         assert!(project.join("crates/atlas-app-core/src/lib.rs").is_file());
         assert!(project.join("apps/atlas-app-macos/src/main.rs").is_file());
@@ -841,6 +1398,13 @@ mod tests {
                 .expect("project README")
                 .contains("ferro build macos")
         );
+        assert!(
+            std::fs::read_to_string(project.join("README.md"))
+                .expect("project README")
+                .contains("ferro package macos --arch arm64")
+        );
+        assert!(project.join("assets/macos/resources/.gitkeep").is_file());
+        assert!(project.join("assets/macos/README.md").is_file());
     }
 
     #[test]
@@ -894,6 +1458,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_apple_silicon_package_command() {
+        let cli = Cli::try_parse_from([
+            "ferro",
+            "package",
+            "macos",
+            "--arch",
+            "arm64",
+            "--format",
+            "zip",
+            "--notarize",
+            "--notary-profile",
+            "ferro-notary",
+        ])
+        .expect("parse package command");
+        let Command::Package {
+            notarize,
+            notary_profile,
+            ..
+        } = cli.command
+        else {
+            panic!("expected package command");
+        };
+        assert!(notarize);
+        assert_eq!(notary_profile.as_deref(), Some("ferro-notary"));
+    }
+
+    #[test]
     fn derives_a_safe_project_slug() {
         assert_eq!(
             project_slug(std::path::Path::new("Atlas App!")),
@@ -929,6 +1520,64 @@ mod tests {
         let plist = macos_info_plist("Atlas & Co", "dev.ferro.atlas", "atlas-macos");
         assert!(plist.contains("Atlas &amp; Co"));
         assert!(plist.contains("CFBundlePackageType"));
+    }
+
+    #[test]
+    fn adds_distribution_assets_and_release_metadata() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let executable = directory.path().join("atlas-macos");
+        std::fs::write(&executable, "executable").expect("fake executable");
+        let bundle = assemble_macos_bundle(
+            directory.path(),
+            "Atlas",
+            "dev.ferro.atlas",
+            "atlas-macos",
+            &executable,
+            None,
+        )
+        .expect("assemble bundle");
+        let icon = directory.path().join("AppIcon.icns");
+        std::fs::write(&icon, b"icns\0\0\0\x08").expect("icns header");
+        let resources = directory.path().join("resources");
+        std::fs::create_dir_all(&resources).expect("resources directory");
+        std::fs::write(resources.join("welcome.txt"), "hello").expect("resource");
+
+        prepare_distribution_bundle(&bundle, &icon, &resources, "1.2.3", 42)
+            .expect("prepare distribution bundle");
+        let contents = bundle.path.join("Contents");
+        assert!(contents.join("Resources/AppIcon.icns").is_file());
+        assert!(contents.join("Resources/welcome.txt").is_file());
+        let plist = std::fs::read_to_string(contents.join("Info.plist")).expect("plist");
+        assert!(plist.contains("<string>1.2.3</string>"));
+        assert!(plist.contains("<string>42</string>"));
+        assert!(plist.contains("CFBundleIconFile"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn creates_distribution_zip_and_dmg() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let executable = directory.path().join("atlas-macos");
+        std::fs::write(&executable, "executable").expect("fake executable");
+        let bundle = assemble_macos_bundle(
+            directory.path(),
+            "Atlas",
+            "dev.ferro.atlas",
+            "atlas-macos",
+            &executable,
+            None,
+        )
+        .expect("assemble bundle");
+        let zip = directory.path().join("Atlas.zip");
+        let dmg = directory.path().join("Atlas.dmg");
+
+        super::create_distribution_artifact(super::PackageFormat::Zip, &bundle.path, &zip, "Atlas")
+            .expect("create zip");
+        super::create_distribution_artifact(super::PackageFormat::Dmg, &bundle.path, &dmg, "Atlas")
+            .expect("create dmg");
+
+        assert!(zip.is_file());
+        assert!(dmg.is_file());
     }
 
     #[test]
