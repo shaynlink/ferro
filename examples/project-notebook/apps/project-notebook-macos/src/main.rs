@@ -1,4 +1,4 @@
-//! Native AppKit host for the Project Notebook tutorial.
+//! Native `AppKit` host for the Project Notebook tutorial.
 
 use std::cell::{OnceCell, RefCell};
 

@@ -25,7 +25,14 @@ impl Document for Note {
 
 /// Navigation destination rendered by the native host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Route { Notes, Project, Weather }
+pub enum Route {
+    /// Browse and edit local notes.
+    Notes,
+    /// Inspect or attach the local project folder.
+    Project,
+    /// Inspect the project's weather service.
+    Weather,
+}
 
 /// UI state owned by the portable reducer.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,7 +50,7 @@ pub struct AppState {
 /// Events from native controls, capabilities, and services.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Event {
-    /// AppKit finished launching.
+    /// `AppKit` finished launching.
     Launched,
     /// The user selected a navigation section.
     Navigate(Route),
@@ -60,7 +67,7 @@ pub enum Event {
 pub enum Effect {
     /// Present the native folder panel.
     ChooseProjectFolder,
-    /// Open the LiliaDB repository below this folder.
+    /// Open the `LiliaDB` repository below this folder.
     LoadNotes(PathBuf),
 }
 
@@ -79,7 +86,7 @@ impl ferro_sdk::Application for ProjectNotebook {
 
     fn reduce(state: &mut Self::State, event: Self::Event) -> Vec<Self::Effect> {
         match event {
-            Event::Launched => Vec::new(),
+            Event::Launched | Event::ProjectFolderChosen(None) => Vec::new(),
             Event::Navigate(route) => { state.route = route; Vec::new() }
             Event::ChooseProjectFolder => vec![Effect::ChooseProjectFolder],
             Event::ProjectFolderChosen(Some(path)) => {
@@ -87,7 +94,6 @@ impl ferro_sdk::Application for ProjectNotebook {
                 state.project_root = Some(path.clone());
                 vec![Effect::LoadNotes(path)]
             }
-            Event::ProjectFolderChosen(None) => Vec::new(),
             Event::NotesLoaded(Ok(notes)) => { state.notes = notes; state.status = format!("{} note(s) loaded", state.notes.len()); Vec::new() }
             Event::NotesLoaded(Err(error)) => { state.status = format!("Could not load notes: {error}"); Vec::new() }
         }
@@ -102,7 +108,10 @@ mod tests {
     #[test]
     fn cancellation_leaves_project_state_unchanged() {
         let mut state = ProjectNotebook::initial_state();
-        assert!(ProjectNotebook::reduce(&mut state, Event::ProjectFolderChosen(None)).is_empty());
+        assert_eq!(
+            ProjectNotebook::reduce(&mut state, Event::ProjectFolderChosen(None)),
+            Vec::<Effect>::new()
+        );
         assert!(state.project_root.is_none());
     }
 
