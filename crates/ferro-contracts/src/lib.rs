@@ -1,6 +1,8 @@
 //! Platform-neutral boundaries between application logic and system services.
 
-use ferro_domain::Workspace;
+use ferro_domain::{
+    Workspace, WorkspaceActivityPoint, WorkspaceArtifact, WorkspaceRelationship, WorkspaceSearchHit,
+};
 
 /// Persistence boundary for the user's recently opened workspaces.
 pub trait RecentWorkspaceStore {
@@ -17,6 +19,90 @@ pub trait RecentWorkspaceStore {
     ///
     /// Returns [`StoreError`] when the platform persistence adapter cannot write its backing store.
     fn remember_workspace(&mut self, workspace: &Workspace) -> Result<(), StoreError>;
+}
+
+/// Persistence boundary for text resources indexed inside one workspace.
+pub trait WorkspaceIndex {
+    /// Adds or replaces an artifact and updates its local searchable representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the artifact cannot be persisted or indexed.
+    fn index_artifact(&mut self, artifact: &WorkspaceArtifact) -> Result<(), StoreError>;
+
+    /// Searches the workspace-local index, most relevant first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the local index cannot be read.
+    fn search_artifacts(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkspaceSearchHit>, StoreError>;
+}
+
+/// Persistence boundary for workspace resource relationships.
+pub trait WorkspaceTopology {
+    /// Records a directed relationship between two indexed artifacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the relationship cannot be persisted.
+    fn connect_artifacts(&mut self, relationship: &WorkspaceRelationship)
+    -> Result<(), StoreError>;
+
+    /// Returns the direct dependencies of an artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the dependency graph cannot be read.
+    fn dependencies_of(&self, artifact_id: &str) -> Result<Vec<String>, StoreError>;
+}
+
+/// Persistence boundary for local workspace activity metrics.
+pub trait WorkspaceActivityStore {
+    /// Appends an activity measurement to a named local series.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the measurement is invalid or cannot be persisted.
+    fn record_activity(
+        &mut self,
+        series: &str,
+        point: WorkspaceActivityPoint,
+    ) -> Result<(), StoreError>;
+}
+
+/// Maintenance actions available to a local workspace database.
+pub trait WorkspaceMaintenance {
+    /// Returns whether a fast integrity verification succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when verification cannot run.
+    fn quick_check(&self) -> Result<bool, StoreError>;
+
+    /// Runs a complete integrity verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when verification cannot run.
+    fn integrity_check(&self) -> Result<bool, StoreError>;
+
+    /// Reverts the latest undoable workspace write, if one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the history cannot be restored.
+    fn undo(&mut self) -> Result<bool, StoreError>;
+
+    /// Reapplies the latest reverted workspace write, if one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the history cannot be restored.
+    fn redo(&mut self) -> Result<bool, StoreError>;
 }
 
 /// Persistence failure that is safe to show in a diagnostic screen.

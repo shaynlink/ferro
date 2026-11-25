@@ -11,6 +11,10 @@ repository.workspace = true
 name = "ferro"
 path = "src/main.rs"
 
+[dependencies]
+ferro-contracts = { path = "../../crates/ferro-contracts" }
+ferro-storage = { path = "../../crates/ferro-storage" }
+
 [lints]
 workspace = true
 
