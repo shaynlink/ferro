@@ -1402,7 +1402,8 @@ mod tests {
 
     use super::{
         Cli, Command, assemble_macos_bundle, init_project, load_macos_project, macos_info_plist,
-        prepare_distribution_bundle, project_slug, safe_bundle_name, watch_fingerprint,
+        prepare_distribution_bundle, project_slug, resolve_macos_host_dir, safe_bundle_name,
+        watch_fingerprint,
     };
 
     #[test]
@@ -1690,10 +1691,9 @@ mod tests {
         .expect("cargo");
         std::fs::write(subproject.join("macos/src/main.rs"), "fn main() {}\n").expect("main");
 
-        let (manifest, slug) = load_macos_project(&subproject, ferro_sdk::Target::Macos)
-            .expect("load monorepo subproject");
-        assert_eq!(slug, "worklens");
-        assert_eq!(manifest.macos().package(), Some("worklens-macos"));
+        let host = resolve_macos_host_dir(&subproject, "worklens")
+            .expect("resolve monorepo subproject host");
+        assert_eq!(host, subproject.join("macos"));
     }
 
     #[test]
