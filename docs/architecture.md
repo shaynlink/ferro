@@ -34,7 +34,7 @@ The initial target family is desktop:
 
 | Target | Direction | Current repository state |
 |---|---|---|
-| macOS | Native AppKit development runtime | Local development supported |
+| macOS | Native AppKit runtime and local `.app` builder | Development and local bundles supported |
 | Windows | Native Windows runtime to be validated | Placeholder only |
 | Linux | Native Linux runtime to be validated | Placeholder only |
 | iOS / Android | Mobile runtime and lifecycle adapters | Future target family |
@@ -96,9 +96,11 @@ Development currently starts on macOS because that is the available machine, but
 not proof of a framework target. CI runs Rust quality checks on macOS, Windows, and Linux; each
 future target needs native runtime, packaging, and accessibility validation on its own platform.
 
-The project model and its `init`, `doctor`, `run`, and target-discovery commands form the first
-CLI/SDK contract. macOS is now a supported native local-development target: its generated host
-implements a typed reducer contract and delegates lifecycle, command routing, menus and
-presentation to the AppKit runtime. The runtime confines Objective-C delegate objects and UI state
-to the main thread. The next architectural milestone is proving equivalent native development
-targets on Windows and Linux before target packaging and distribution work begins.
+The project model and its `init`, `doctor`, `run`, `dev`, `build macos`, and target-discovery
+commands form the first CLI/SDK contract. macOS is now a supported native local-development target:
+its generated host implements a typed reducer contract and delegates lifecycle, command routing,
+menus and presentation to the AppKit runtime. The CLI assembles the Cargo executable into a local
+`.app`, optionally signs it with a configured keychain identity, and keeps signing policy outside
+the shared SDK. The runtime confines Objective-C delegate objects and UI state to the main thread.
+The next architectural milestone is notarized distribution on macOS and equivalent native
+development targets on Windows and Linux.

@@ -19,6 +19,21 @@ pub const CURRENT_SCHEMA: u32 = 1;
 pub struct ProjectManifest {
     application: ApplicationDescriptor,
     targets: Vec<Target>,
+    macos: MacosConfiguration,
+}
+
+/// macOS-specific project configuration.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MacosConfiguration {
+    signing_identity: Option<String>,
+}
+
+impl MacosConfiguration {
+    /// Returns the optional code-signing identity used for local macOS bundles.
+    #[must_use]
+    pub fn signing_identity(&self) -> Option<&str> {
+        self.signing_identity.as_deref()
+    }
 }
 
 impl ProjectManifest {
@@ -40,7 +55,28 @@ impl ProjectManifest {
         Ok(Self {
             application: ApplicationDescriptor::new(name, id),
             targets,
+            macos: MacosConfiguration::default(),
         })
+    }
+
+    /// Sets the optional macOS code-signing identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectError`] when the identity is empty.
+    pub fn with_macos_signing_identity(
+        mut self,
+        signing_identity: Option<String>,
+    ) -> Result<Self, ProjectError> {
+        if let Some(identity) = &signing_identity
+            && identity.trim().is_empty()
+        {
+            return Err(ProjectError::Invalid(
+                "macOS signing_identity cannot be empty".to_owned(),
+            ));
+        }
+        self.macos.signing_identity = signing_identity;
+        Ok(self)
     }
 
     /// Reads and validates `ferro.toml` at `path`.
@@ -77,7 +113,8 @@ impl ProjectManifest {
                     .map_err(|error| ProjectError::Invalid(error.to_string()))
             })
             .collect::<Result<_, _>>()?;
-        Self::new(raw.app.name, raw.app.id, targets)
+        Self::new(raw.app.name, raw.app.id, targets)?
+            .with_macos_signing_identity(raw.macos.and_then(|macos| macos.signing_identity))
     }
 
     /// Returns the stable application metadata.
@@ -92,6 +129,12 @@ impl ProjectManifest {
         &self.targets
     }
 
+    /// Returns macOS-specific configuration.
+    #[must_use]
+    pub fn macos(&self) -> &MacosConfiguration {
+        &self.macos
+    }
+
     /// Renders this manifest in Ferro's canonical TOML form.
     #[must_use]
     pub fn to_toml(&self) -> String {
@@ -101,11 +144,17 @@ impl ProjectManifest {
             .map(|target| format!("\"{target}\""))
             .collect::<Vec<_>>()
             .join(", ");
-        format!(
+        let mut manifest = format!(
             "schema = {CURRENT_SCHEMA}\n\n[app]\nname = \"{}\"\nid = \"{}\"\ntargets = [{targets}]\n",
             self.application.name(),
             self.application.id()
-        )
+        );
+        if let Some(identity) = self.macos.signing_identity() {
+            manifest.push_str("\n[macos]\nsigning_identity = \"");
+            manifest.push_str(identity);
+            manifest.push_str("\"\n");
+        }
+        manifest
     }
 }
 
@@ -114,6 +163,7 @@ impl ProjectManifest {
 struct RawManifest {
     schema: u32,
     app: RawApplication,
+    macos: Option<RawMacos>,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +172,12 @@ struct RawApplication {
     name: String,
     id: String,
     targets: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMacos {
+    signing_identity: Option<String>,
 }
 
 /// An error while loading or validating a Ferro project manifest.
@@ -266,6 +322,34 @@ mod tests {
             manifest
                 .to_toml()
                 .starts_with(&format!("schema = {CURRENT_SCHEMA}"))
+        );
+    }
+
+    #[test]
+    fn parses_and_renders_an_optional_macos_signing_identity() {
+        let manifest = ProjectManifest::parse(
+            "schema = 1\n\n[app]\nname = \"Atlas\"\nid = \"dev.ferro.atlas\"\ntargets = [\"macos\"]\n\n[macos]\nsigning_identity = \"Developer ID Application: Atlas\"\n",
+        )
+        .expect("valid signing configuration");
+
+        assert_eq!(
+            manifest.macos().signing_identity(),
+            Some("Developer ID Application: Atlas")
+        );
+        assert!(manifest.to_toml().contains("[macos]"));
+    }
+
+    #[test]
+    fn rejects_an_empty_macos_signing_identity() {
+        let error = ProjectManifest::parse(
+            "schema = 1\n\n[app]\nname = \"Atlas\"\nid = \"dev.ferro.atlas\"\ntargets = [\"macos\"]\n\n[macos]\nsigning_identity = \"   \"\n",
+        )
+        .expect_err("empty identity must be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("signing_identity cannot be empty")
         );
     }
 }

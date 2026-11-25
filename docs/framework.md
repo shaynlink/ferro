@@ -16,7 +16,7 @@ native platform integration, and does not currently promise one universal widget
 - It is not a single desktop workspace application for end users.
 - It is not an AppKit product with Windows and Linux ports.
 - It is not a webview shell.
-- It is not yet a released SDK, project generator, or package manager.
+- It is not yet a released SDK or package manager.
 
 The repository's current AppKit host and LiliaDB code are implementation experiments that validate
 pieces of the future framework. They are not the developer-facing product contract.
@@ -33,14 +33,19 @@ The public workflow will be built incrementally:
    requires it.
 5. Package and release each target using its native signing and distribution conventions.
 
-Today, `ferro init`, `ferro doctor`, `ferro run`, and `ferro target list` establish the first part
-of this workflow. `ferro init` writes a strict, versioned `ferro.toml` manifest and creates a Cargo
-workspace containing a shared core plus one scaffold host per declared desktop target. On macOS,
-`ferro run --project <path>` compiles and launches the generated AppKit host when `macos` is
-declared. The generated project demonstrates the intended split: its core owns a typed state,
-events and a pure reducer; its macOS host owns AppKit views, native commands and file-panel effects.
-It is a local-development runtime only: the generated project currently points at the checked-out
-Ferro source, and packaging, signing, and publishing remain out of scope.
+Today, `ferro init`, `ferro doctor`, `ferro run`, `ferro dev`, `ferro build macos`, and `ferro
+target list` establish the macOS workflow. `ferro init` writes a strict, versioned `ferro.toml`
+manifest and defaults to a Cargo workspace containing a shared core and executable macOS host. On
+macOS, `ferro run --project <path>` builds a Debug `.app` and launches it; `ferro dev --project
+<path>` rebuilds and relaunches after successful source changes; and `ferro build macos --project
+<path>` produces a local bundle without launching it. The generated project demonstrates the
+intended split: its core owns a typed state, events and a pure reducer; its macOS host owns AppKit
+views, native commands and file-panel effects.
+
+Bundles are unsigned by default for local development. An optional `[macos] signing_identity` (or
+`--sign`) selects an identity already installed in the macOS keychain. `ferro doctor` checks Rust,
+Cargo, Xcode, code-signing tools, the generated host and any configured identity. Notarization,
+installable distribution and publishing remain out of scope.
 
 ## Stable developer API
 
@@ -58,10 +63,11 @@ feature do not link a storage backend. SQLite is not a Ferro feature or supporte
 ## Project contract
 
 Every Ferro project has a root `ferro.toml` document. Schema version 1 contains an application
-name, a stable reverse-DNS identifier, and an ordered list of desktop targets. Unknown fields and
-unknown targets are rejected so every Ferro tool interprets the project consistently.
+name, a stable reverse-DNS identifier, and an ordered list of desktop targets. Its optional
+`[macos] signing_identity` configures local bundle signing. Unknown fields and unknown targets are
+rejected so every Ferro tool interprets the project consistently.
 
-`ferro init` defaults to macOS, Windows, and Linux and derives an identifier of the form
+`ferro init` defaults to macOS and derives an identifier of the form
 `dev.ferro.<slug>`. Use `--id` before distribution to provide an application-owned identifier.
 
 ## Portability policy
