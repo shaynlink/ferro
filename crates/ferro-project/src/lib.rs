@@ -6,26 +6,31 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ferro_sdk::{ApplicationDescriptor, Target};
 use serde::Deserialize;
 
 /// The only manifest schema accepted by this version of Ferro.
-pub const CURRENT_SCHEMA: u32 = 1;
+pub const CURRENT_SCHEMA: u32 = 2;
 
 /// Validated configuration for a Ferro application project.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectManifest {
+    schema: u32,
     application: ApplicationDescriptor,
     targets: Vec<Target>,
     macos: MacosConfiguration,
+    version: Option<String>,
+    build_number: Option<u64>,
 }
 
 /// macOS-specific project configuration.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MacosConfiguration {
     signing_identity: Option<String>,
+    icon: Option<PathBuf>,
+    resources_dir: Option<PathBuf>,
 }
 
 impl MacosConfiguration {
@@ -33,6 +38,18 @@ impl MacosConfiguration {
     #[must_use]
     pub fn signing_identity(&self) -> Option<&str> {
         self.signing_identity.as_deref()
+    }
+
+    /// Returns the optional project-relative ICNS icon path.
+    #[must_use]
+    pub fn icon(&self) -> Option<&Path> {
+        self.icon.as_deref()
+    }
+
+    /// Returns the optional project-relative static-resource directory.
+    #[must_use]
+    pub fn resources_dir(&self) -> Option<&Path> {
+        self.resources_dir.as_deref()
     }
 }
 
@@ -53,9 +70,12 @@ impl ProjectManifest {
         validate_application_id(&id)?;
         validate_targets(&targets)?;
         Ok(Self {
+            schema: CURRENT_SCHEMA,
             application: ApplicationDescriptor::new(name, id),
             targets,
             macos: MacosConfiguration::default(),
+            version: Some("0.1.0".to_owned()),
+            build_number: Some(1),
         })
     }
 
@@ -68,14 +88,25 @@ impl ProjectManifest {
         mut self,
         signing_identity: Option<String>,
     ) -> Result<Self, ProjectError> {
-        if let Some(identity) = &signing_identity
-            && identity.trim().is_empty()
-        {
-            return Err(ProjectError::Invalid(
-                "macOS signing_identity cannot be empty".to_owned(),
-            ));
-        }
+        validate_signing_identity(signing_identity.as_deref())?;
         self.macos.signing_identity = signing_identity;
+        Ok(self)
+    }
+
+    /// Sets the optional project-relative macOS packaging assets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectError`] when an asset path is absolute or empty.
+    pub fn with_macos_assets(
+        mut self,
+        icon: Option<PathBuf>,
+        resources_dir: Option<PathBuf>,
+    ) -> Result<Self, ProjectError> {
+        validate_relative_asset_path(icon.as_deref(), "macOS icon")?;
+        validate_relative_asset_path(resources_dir.as_deref(), "macOS resources_dir")?;
+        self.macos.icon = icon;
+        self.macos.resources_dir = resources_dir;
         Ok(self)
     }
 
@@ -100,7 +131,7 @@ impl ProjectManifest {
     /// Returns [`ProjectError`] when the document has an unsupported schema or invalid content.
     pub fn parse(source: &str) -> Result<Self, ProjectError> {
         let raw: RawManifest = toml::from_str(source).map_err(ProjectError::Parse)?;
-        if raw.schema != CURRENT_SCHEMA {
+        if raw.schema != 1 && raw.schema != CURRENT_SCHEMA {
             return Err(ProjectError::UnsupportedSchema(raw.schema));
         }
         let targets = raw
@@ -113,14 +144,70 @@ impl ProjectManifest {
                     .map_err(|error| ProjectError::Invalid(error.to_string()))
             })
             .collect::<Result<_, _>>()?;
+        let macos = raw.macos.unwrap_or_default();
+        validate_signing_identity(macos.signing_identity.as_deref())?;
+        if raw.schema == 1 {
+            return Ok(Self {
+                schema: 1,
+                application: ApplicationDescriptor::new(raw.app.name, raw.app.id),
+                targets,
+                macos: MacosConfiguration {
+                    signing_identity: macos.signing_identity,
+                    icon: None,
+                    resources_dir: None,
+                },
+                version: None,
+                build_number: None,
+            });
+        }
+        let version = raw
+            .app
+            .version
+            .ok_or_else(|| ProjectError::Invalid("schema 2 requires app.version".to_owned()))?;
+        validate_version(&version)?;
+        let build_number = raw.app.build_number.ok_or_else(|| {
+            ProjectError::Invalid("schema 2 requires app.build_number".to_owned())
+        })?;
+        if build_number == 0 {
+            return Err(ProjectError::Invalid(
+                "app.build_number must be greater than zero".to_owned(),
+            ));
+        }
         Self::new(raw.app.name, raw.app.id, targets)?
-            .with_macos_signing_identity(raw.macos.and_then(|macos| macos.signing_identity))
+            .with_macos_signing_identity(macos.signing_identity)?
+            .with_macos_assets(
+                macos.icon.map(PathBuf::from),
+                macos.resources_dir.map(PathBuf::from),
+            )
+            .map(|mut manifest| {
+                manifest.version = Some(version);
+                manifest.build_number = Some(build_number);
+                manifest
+            })
     }
 
     /// Returns the stable application metadata.
     #[must_use]
     pub fn application(&self) -> &ApplicationDescriptor {
         &self.application
+    }
+
+    /// Returns the manifest schema version that was parsed.
+    #[must_use]
+    pub const fn schema(&self) -> u32 {
+        self.schema
+    }
+
+    /// Returns the app-store-style marketing version when available.
+    #[must_use]
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    /// Returns the monotonically increasing build number when available.
+    #[must_use]
+    pub const fn build_number(&self) -> Option<u64> {
+        self.build_number
     }
 
     /// Returns enabled targets in manifest order.
@@ -145,13 +232,37 @@ impl ProjectManifest {
             .collect::<Vec<_>>()
             .join(", ");
         let mut manifest = format!(
-            "schema = {CURRENT_SCHEMA}\n\n[app]\nname = \"{}\"\nid = \"{}\"\ntargets = [{targets}]\n",
+            "schema = {}\n\n[app]\nname = \"{}\"\nid = \"{}\"\ntargets = [{targets}]\n",
+            self.schema,
             self.application.name(),
             self.application.id()
         );
+        if let (Some(version), Some(build_number)) = (self.version(), self.build_number()) {
+            manifest.push_str("version = \"");
+            manifest.push_str(version);
+            manifest.push_str("\"\nbuild_number = ");
+            manifest.push_str(&build_number.to_string());
+            manifest.push('\n');
+        }
         if let Some(identity) = self.macos.signing_identity() {
             manifest.push_str("\n[macos]\nsigning_identity = \"");
             manifest.push_str(identity);
+            manifest.push_str("\"\n");
+        }
+        if let Some(icon) = self.macos.icon() {
+            if !manifest.ends_with("\n[macos]\n") && self.macos.signing_identity().is_none() {
+                manifest.push_str("\n[macos]\n");
+            }
+            manifest.push_str("icon = \"");
+            manifest.push_str(&icon.display().to_string());
+            manifest.push_str("\"\n");
+        }
+        if let Some(resources_dir) = self.macos.resources_dir() {
+            if self.macos.signing_identity().is_none() && self.macos.icon().is_none() {
+                manifest.push_str("\n[macos]\n");
+            }
+            manifest.push_str("resources_dir = \"");
+            manifest.push_str(&resources_dir.display().to_string());
             manifest.push_str("\"\n");
         }
         manifest
@@ -172,12 +283,17 @@ struct RawApplication {
     name: String,
     id: String,
     targets: Vec<String>,
+    version: Option<String>,
+    build_number: Option<u64>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 struct RawMacos {
     signing_identity: Option<String>,
+    icon: Option<String>,
+    resources_dir: Option<String>,
 }
 
 /// An error while loading or validating a Ferro project manifest.
@@ -235,6 +351,50 @@ fn validate_name(name: &str) -> Result<(), ProjectError> {
     Ok(())
 }
 
+fn validate_version(version: &str) -> Result<(), ProjectError> {
+    let valid = !version.is_empty()
+        && version.split('.').all(|component| {
+            !component.is_empty()
+                && component
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(ProjectError::Invalid(
+            "app.version must be dot-separated numeric components".to_owned(),
+        ))
+    }
+}
+
+fn validate_relative_asset_path(path: Option<&Path>, label: &str) -> Result<(), ProjectError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(ProjectError::Invalid(format!(
+            "{label} must be a non-empty project-relative path"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_signing_identity(identity: Option<&str>) -> Result<(), ProjectError> {
+    if identity.is_some_and(|identity| identity.trim().is_empty()) {
+        Err(ProjectError::Invalid(
+            "macOS signing_identity cannot be empty".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_application_id(id: &str) -> Result<(), ProjectError> {
     let valid = id.split('.').count() >= 3
         && id.split('.').all(|component| {
@@ -268,6 +428,8 @@ fn validate_targets(targets: &[Target]) -> Result<(), ProjectError> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use ferro_sdk::Target;
 
     use super::{CURRENT_SCHEMA, ProjectManifest};
@@ -281,6 +443,8 @@ mod tests {
 
         assert_eq!(manifest.application().name(), "Atlas");
         assert_eq!(manifest.targets(), [Target::Macos, Target::Linux]);
+        assert_eq!(manifest.schema(), 1);
+        assert_eq!(manifest.version(), None);
     }
 
     #[test]
@@ -328,7 +492,7 @@ mod tests {
     #[test]
     fn parses_and_renders_an_optional_macos_signing_identity() {
         let manifest = ProjectManifest::parse(
-            "schema = 1\n\n[app]\nname = \"Atlas\"\nid = \"dev.ferro.atlas\"\ntargets = [\"macos\"]\n\n[macos]\nsigning_identity = \"Developer ID Application: Atlas\"\n",
+            "schema = 2\n\n[app]\nname = \"Atlas\"\nid = \"dev.ferro.atlas\"\ntargets = [\"macos\"]\nversion = \"1.2.3\"\nbuild_number = 42\n\n[macos]\nsigning_identity = \"Developer ID Application: Atlas\"\nicon = \"assets/macos/AppIcon.icns\"\nresources_dir = \"assets/macos/resources\"\n",
         )
         .expect("valid signing configuration");
 
@@ -337,6 +501,12 @@ mod tests {
             Some("Developer ID Application: Atlas")
         );
         assert!(manifest.to_toml().contains("[macos]"));
+        assert_eq!(manifest.version(), Some("1.2.3"));
+        assert_eq!(manifest.build_number(), Some(42));
+        assert_eq!(
+            manifest.macos().icon(),
+            Some(Path::new("assets/macos/AppIcon.icns"))
+        );
     }
 
     #[test]
@@ -351,5 +521,15 @@ mod tests {
                 .to_string()
                 .contains("signing_identity cannot be empty")
         );
+    }
+
+    #[test]
+    fn rejects_incomplete_schema_two_distribution_metadata() {
+        let error = ProjectManifest::parse(
+            "schema = 2\n\n[app]\nname = \"Atlas\"\nid = \"dev.ferro.atlas\"\ntargets = [\"macos\"]\n",
+        )
+        .expect_err("schema two requires release metadata");
+
+        assert!(error.to_string().contains("requires app.version"));
     }
 }

@@ -108,8 +108,14 @@ SDK dependency.
 The optional `[macos] signing_identity` in `ferro.toml` (or `ferro build macos --sign <identity>`)
 signs a local bundle with an identity present in the macOS keychain. Without it, bundles stay
 unsigned for local development. `ferro doctor` verifies Rust, Cargo, Xcode, `codesign`, the project
-structure and any configured identity. Notarization, installable distribution and publication are
-still roadmap work.
+structure and any configured identity.
+
+For direct macOS distribution, generated schema-2 projects declare their version, build number,
+ICNS icon and static resources in `ferro.toml`. `ferro package macos --arch arm64` creates a
+Developer ID-signed Apple Silicon DMG by default (or `--format zip`). Add `--notarize
+--notary-profile <profile>` to submit and staple it through Apple’s Notary service. See [the macOS
+distribution guide](docs/macos-distribution.md). App Store sandboxing, entitlements and submission
+remain a future target.
 
 The public developer surface is deliberately small: `ferro-sdk` defines an application reducer and
 typed `FerroError`; target hosts own native UI and dialogues. Optional persistence exposes only
