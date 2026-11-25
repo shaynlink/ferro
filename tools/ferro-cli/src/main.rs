@@ -693,6 +693,7 @@ fn is_executable_file(path: &Path) -> Result<bool, String> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn is_executable_file(_path: &Path) -> Result<bool, String> {
     Ok(false)
 }
