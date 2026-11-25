@@ -42,9 +42,17 @@ user intents to domain actions, and returns data that a platform host can presen
 `ferro-contracts` defines ports for system capabilities such as persistence, native file dialogs,
 secure storage, notifications, and background scheduling. Contracts contain no platform type.
 
-`ferro-storage` implements the current recent-workspace persistence port. The default `liliadb`
-feature embeds LiliaDB v0.2 from a pinned `main` revision. Its `sqlite` feature is an intentional
-alternative for interoperability; both features are mutually exclusive.
+`ferro-storage` embeds LiliaDB v0.2 from a pinned `main` revision and is Ferro's only persistent
+backend. A global catalogue lives in the OS application-data directory; a workspace database lives
+under the workspace's `.ferro` directory. SQLite is neither supported nor migrated.
+
+The storage adapter is intentionally multimodel: JSON documents represent indexed resources,
+full-text indexes support local lexical search, graphs represent resource dependencies, time-series
+store local activity, and history/undo protect user actions. These details never cross
+`ferro-contracts`: shared application code sees Ferro domain values and focused persistence ports.
+Vector search, embeddings, CRDT exchange, analytics, ledger and policy-based exports remain
+capability additions behind the same boundary. They must have a real Ferro workflow before gaining
+an application or native UI surface.
 
 ### State and design intent
 
@@ -77,6 +85,10 @@ it.
 5. Every platform adapter needs contract tests. A test double belongs in `ferro-testkit` when it is
    useful beyond one platform.
 6. Any native FFI `unsafe` block must be local, minimal, and include a safety justification.
+7. No platform host or shared domain crate may use LiliaDB types directly; only `ferro-storage`
+   owns that dependency.
+8. A workspace indexer may process accessible workspace text locally, but semantic embeddings need
+   an explicitly installed and checksum-verified model component; no model is downloaded silently.
 
 ## Build and validation policy
 

@@ -29,7 +29,7 @@ crates/
   ferro-application/ Platform-neutral use cases
   ferro-contracts/   Ports implemented by system adapters
   ferro-state/       Presentation state and user intents
-  ferro-storage/     Persistent LiliaDB or SQLite adapters
+  ferro-storage/     Embedded LiliaDB adapters and workspace storage
   ferro-design/      Semantic design tokens, never widgets
   ferro-testkit/     In-memory adapters and test helpers
 tools/
@@ -45,8 +45,9 @@ implementation strategy.
 ## Status
 
 Ferro is in bootstrap. The Rust workspace, quality gates, CI matrix, CLI foundation, and native
-AppKit workspace-list screen exist. Recent workspaces persist in LiliaDB by default; SQLite is an
-explicit alternate feature for deployments that require direct SQLite interoperability.
+AppKit workspace-list screen exist. LiliaDB v0.2 is the only persistent backend: a compact global
+catalogue stores recently opened workspaces, while each workspace can own a multimodel local base.
+SQLite is intentionally not supported or migrated.
 
 ## Prerequisites
 
@@ -70,8 +71,8 @@ cargo run -p ferro -- doctor
 # Launch the macOS AppKit host.
 cargo run -p ferro-macos
 
-# Launch the same host with SQLite instead of the default LiliaDB backend.
-cargo run -p ferro-macos --no-default-features --features sqlite
+# Verify a workspace-local LiliaDB database.
+cargo run -p ferro -- storage /path/to/workspace/.ferro/ferro.lilia
 ```
 
 ## Non-goals
@@ -83,9 +84,11 @@ cargo run -p ferro-macos --no-default-features --features sqlite
 
 ## Roadmap
 
-1. Add native file selection and workspace opening to the macOS host.
-3. Validate GTK4/Linux and Windows native hosts through dedicated spikes.
-4. Package, test, and release a desktop beta on all three operating systems.
+1. Add native file selection, workspace opening and workspace-local storage provisioning.
+2. Index workspace content locally with LiliaDB JSON, full-text and graph models.
+3. Add opt-in semantic indexing through a separately verified local model component.
+4. Validate GTK4/Linux and Windows native hosts through dedicated spikes.
+5. Package, test, and release a desktop beta on all three operating systems.
 
 ## License
 

@@ -110,16 +110,11 @@ fn load_workspaces() -> Result<ferro_application::RecentWorkspaces, StoreError> 
 fn recent_workspaces_database_path() -> Result<PathBuf, StoreError> {
     let home = std::env::var_os("HOME")
         .ok_or_else(|| StoreError::new("could not determine the home directory"))?;
-    let filename = if cfg!(feature = "sqlite") {
-        "ferro.sqlite"
-    } else {
-        "ferro.lilia"
-    };
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Application Support")
         .join("Ferro")
-        .join(filename))
+        .join("catalog.lilia"))
 }
 
 fn add_workspace_row(

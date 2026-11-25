@@ -1,24 +1,18 @@
 [package]
 name = "ferro-storage"
-description = "Persistent Ferro adapters backed by LiliaDB or SQLite."
+description = "Persistent Ferro adapters backed by embedded LiliaDB."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[features]
-default = ["liliadb"]
-liliadb = ["dep:lilia-db", "dep:serde", "dep:serde_json"]
-sqlite = ["dep:rusqlite"]
-
 [dependencies]
 ferro-contracts = { path = "../ferro-contracts" }
 ferro-domain = { path = "../ferro-domain" }
-lilia-db = { git = "https://github.com/shaynlink/liliadb.git", rev = "bd3020dea12ea9430078955ece8bc327af6fd7df", package = "lilia-db", default-features = false, optional = true }
-rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
-serde = { version = "1.0.228", features = ["derive"], optional = true }
-serde_json = { version = "1.0.145", optional = true }
+lilia-db = { git = "https://github.com/shaynlink/liliadb.git", rev = "bd3020dea12ea9430078955ece8bc327af6fd7df", package = "lilia-db", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 
 [dev-dependencies]
 tempfile = "3.27.0"

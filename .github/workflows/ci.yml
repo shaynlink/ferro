@@ -19,6 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: runner.os == 'macOS'
       - run: cargo test --workspace
+        if: runner.os == 'macOS'
+      - run: cargo clippy --workspace --exclude ferro-macos --all-targets -- -D warnings
+        if: runner.os != 'macOS'
+      - run: cargo test --workspace --exclude ferro-macos
+        if: runner.os != 'macOS'
