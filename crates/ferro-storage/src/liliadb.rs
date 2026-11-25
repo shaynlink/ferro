@@ -1,8 +1,10 @@
+use std::marker::PhantomData;
 use std::path::Path;
 
 use ferro_contracts::{
-    Preferences, RecentResource, RecentResources, RecentWorkspaceStore, StoreError,
-    WorkspaceActivityStore, WorkspaceIndex, WorkspaceMaintenance, WorkspaceTopology,
+    Document, DocumentRepository, Preferences, RecentResource, RecentResources,
+    RecentWorkspaceStore, StoreError, WorkspaceActivityStore, WorkspaceIndex, WorkspaceMaintenance,
+    WorkspaceTopology,
 };
 use ferro_domain::{
     Workspace, WorkspaceActivityPoint, WorkspaceArtifact, WorkspaceRelationship, WorkspaceSearchHit,
@@ -20,6 +22,81 @@ const ARTIFACT_SEARCH: &str = "ferro_workspace_artifacts";
 const WORKSPACE_GRAPH: &str = "ferro_workspace_dependencies";
 const APPLICATION_PREFERENCES: &str = "ferro_application_preferences";
 const APPLICATION_RECENTS: &str = "ferro_application_recents";
+
+/// A typed JSON-document repository backed exclusively by one `LiliaDB` namespace.
+pub struct LiliaDocumentRepository<D> {
+    database: Database,
+    namespace: String,
+    marker: PhantomData<fn() -> D>,
+}
+
+impl<D> LiliaDocumentRepository<D> {
+    /// Opens or creates a repository at `path` in an application-defined `namespace`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] when the local `LiliaDB` database cannot be opened.
+    pub fn open(path: impl AsRef<Path>, namespace: impl Into<String>) -> Result<Self, FerroError> {
+        let namespace = namespace.into();
+        if namespace.trim().is_empty() {
+            return Err(FerroError::new(
+                FerroErrorKind::Persistence,
+                "document repository namespace cannot be empty",
+            ));
+        }
+        open_database(path)
+            .map(|database| Self {
+                database,
+                namespace,
+                marker: PhantomData,
+            })
+            .map_err(public_store_error)
+    }
+}
+
+impl<D> DocumentRepository<D> for LiliaDocumentRepository<D>
+where
+    D: Document + serde::de::DeserializeOwned + Serialize,
+{
+    fn list(&self) -> Result<Vec<D>, FerroError> {
+        self.database
+            .system()
+            .json_scan(&self.namespace, &lilia_db::Scan::default())
+            .map_err(public_lilia_error)?
+            .into_iter()
+            .map(|entry| {
+                serde_json::from_value(entry.value()).map_err(|error| {
+                    FerroError::new(
+                        FerroErrorKind::Persistence,
+                        format!("could not decode document: {error}"),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn upsert(&mut self, document: &D) -> Result<(), FerroError> {
+        let value = serde_json::to_value(document).map_err(|error| {
+            FerroError::new(
+                FerroErrorKind::Persistence,
+                format!("could not encode document: {error}"),
+            )
+        })?;
+        self.database
+            .system()
+            .json_put(&self.namespace, document.id(), &value)
+            .map(drop)
+            .map_err(public_lilia_error)
+    }
+
+    fn delete(&mut self, id: &str) -> Result<(), FerroError> {
+        self.database
+            .system()
+            .json_delete(&self.namespace, id)
+            .map(drop)
+            .map_err(public_lilia_error)
+    }
+}
 
 /// Optional application persistence services backed exclusively by `LiliaDB`.
 pub struct LiliaApplicationStorage {
@@ -411,14 +488,58 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use ferro_contracts::{
-        Preferences, RecentResource, RecentResources, RecentWorkspaceStore, WorkspaceActivityStore,
-        WorkspaceIndex, WorkspaceMaintenance, WorkspaceTopology,
+        Document, DocumentRepository, Preferences, RecentResource, RecentResources,
+        RecentWorkspaceStore, WorkspaceActivityStore, WorkspaceIndex, WorkspaceMaintenance,
+        WorkspaceTopology,
     };
     use ferro_domain::{
         Workspace, WorkspaceActivityPoint, WorkspaceArtifact, WorkspaceRelationship,
     };
 
-    use super::{LiliaApplicationStorage, PersistentRecentWorkspaceStore, WorkspaceDatabase};
+    use serde::{Deserialize, Serialize};
+
+    use super::{
+        LiliaApplicationStorage, LiliaDocumentRepository, PersistentRecentWorkspaceStore,
+        WorkspaceDatabase,
+    };
+
+    #[derive(Deserialize, Serialize, Debug, Eq, PartialEq)]
+    struct TestDocument {
+        id: String,
+        value: String,
+    }
+
+    impl Document for TestDocument {
+        fn id(&self) -> &str {
+            &self.id
+        }
+    }
+
+    #[test]
+    fn typed_documents_survive_reopen_and_delete() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("documents.lilia");
+        let mut repository =
+            LiliaDocumentRepository::<TestDocument>::open(&path, "notes").expect("open repository");
+        repository
+            .upsert(&TestDocument {
+                id: "one".to_owned(),
+                value: "first".to_owned(),
+            })
+            .expect("save");
+        drop(repository);
+        let mut repository = LiliaDocumentRepository::<TestDocument>::open(&path, "notes")
+            .expect("reopen repository");
+        assert_eq!(
+            repository.list().expect("list"),
+            vec![TestDocument {
+                id: "one".to_owned(),
+                value: "first".to_owned(),
+            }]
+        );
+        repository.delete("one").expect("delete");
+        assert_eq!(repository.list().expect("list"), Vec::<TestDocument>::new());
+    }
 
     #[test]
     fn application_services_persist_preferences_and_recents() {

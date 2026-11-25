@@ -6,6 +6,36 @@ use ferro_domain::{
 use ferro_sdk::FerroError;
 use std::path::{Path, PathBuf};
 
+/// A typed application document persisted by a local repository.
+pub trait Document {
+    /// Stable key used to replace or remove this document.
+    fn id(&self) -> &str;
+}
+
+/// Optional typed local-document persistence service.
+pub trait DocumentRepository<D: Document> {
+    /// Returns every document currently stored by this repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] if the backing store cannot be read.
+    fn list(&self) -> Result<Vec<D>, FerroError>;
+
+    /// Creates or replaces a document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] if the backing store cannot be written.
+    fn upsert(&mut self, document: &D) -> Result<(), FerroError>;
+
+    /// Removes a document. A missing document is successful.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] if the backing store cannot be written.
+    fn delete(&mut self, id: &str) -> Result<(), FerroError>;
+}
+
 /// A recently used file or directory retained by an application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecentResource {
