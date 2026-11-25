@@ -69,7 +69,8 @@ ferro CLI and project manifests
 - `ferro-sdk` provides the small, platform-neutral public vocabulary shared by project tooling and
   future target adapters. `ferro-project` owns strict parsing and validation of the versioned
   `ferro.toml` project contract. `ferro-macos-runtime` owns AppKit startup and the native
-  development window; it depends only on the portable `ferro-sdk` application contract.
+  development window; it drives the portable `ferro-sdk` reducer through `ferro-state`, then
+  delegates views, commands and target effects to the generated macOS host.
 - `apps/ferro-*` are target-host experiments and reference runtimes, not Ferro's end-user
   application. They may depend on shared crates; they never depend on one another.
 - `tools/ferro-cli` is the seed of the developer experience. It will grow around an explicit
@@ -97,6 +98,7 @@ future target needs native runtime, packaging, and accessibility validation on i
 
 The project model and its `init`, `doctor`, `run`, and target-discovery commands form the first
 CLI/SDK contract. macOS is now a supported native local-development target: its generated host
-implements the SDK metadata entry point and delegates lifecycle and presentation to the AppKit
-runtime. The next architectural milestone is proving equivalent native development targets on
-Windows and Linux before target packaging and distribution work begins.
+implements a typed reducer contract and delegates lifecycle, command routing, menus and
+presentation to the AppKit runtime. The runtime confines Objective-C delegate objects and UI state
+to the main thread. The next architectural milestone is proving equivalent native development
+targets on Windows and Linux before target packaging and distribution work begins.

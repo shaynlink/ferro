@@ -37,8 +37,10 @@ Today, `ferro init`, `ferro doctor`, `ferro run`, and `ferro target list` establ
 of this workflow. `ferro init` writes a strict, versioned `ferro.toml` manifest and creates a Cargo
 workspace containing a shared core plus one scaffold host per declared desktop target. On macOS,
 `ferro run --project <path>` compiles and launches the generated AppKit host when `macos` is
-declared. It is a local-development runtime only: the generated project currently points at the
-checked-out Ferro source, and packaging, signing, and publishing remain out of scope.
+declared. The generated project demonstrates the intended split: its core owns a typed state,
+events and a pure reducer; its macOS host owns AppKit views, native commands and file-panel effects.
+It is a local-development runtime only: the generated project currently points at the checked-out
+Ferro source, and packaging, signing, and publishing remain out of scope.
 
 ## Project contract
 
@@ -58,6 +60,11 @@ target adapter when their platform semantics differ.
 This keeps a Ferro application from being reduced to the least capable target while avoiding a
 separate product implementation for every platform. It also lets the framework add iOS, Android,
 and later device families without treating desktop assumptions as universal.
+
+The first native capability is intentionally macOS-specific: a host can present open-file,
+open-folder and save panels, then turn their selected paths or cancellation into portable events.
+Ferro does not claim that this is already a shared capability contract; that requires validation by
+at least one additional target runtime.
 
 ## Delivery sequence
 

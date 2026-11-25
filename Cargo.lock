@@ -373,6 +373,7 @@ name = "ferro-macos-runtime"
 version = "0.1.0"
 dependencies = [
  "ferro-sdk",
+ "ferro-state",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -396,6 +397,7 @@ name = "ferro-state"
 version = "0.1.0"
 dependencies = [
  "ferro-domain",
+ "ferro-sdk",
 ]
 
 [[package]]

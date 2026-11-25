@@ -315,14 +315,14 @@ fn render_core_manifest(slug: &str) -> String {
 
 fn render_core_source(slug: &str, id: &str) -> String {
     format!(
-        "//! Shared application entry point for `{slug}`.\n\n/// Ferro application metadata consumed by native target runtimes.\npub struct Application;\n\nimpl ferro_sdk::Application for Application {{\n    fn descriptor() -> ferro_sdk::ApplicationDescriptor {{\n        ferro_sdk::ApplicationDescriptor::new(\"{slug}\", \"{id}\")\n    }}\n}}\n"
+        "//! Portable state and reducer for `{slug}`.\n\nuse std::path::PathBuf;\n\n/// Ferro application metadata and portable reducer.\npub struct Application;\n\n/// State shared by every native host.\n#[derive(Clone, Debug, Default, Eq, PartialEq)]\npub struct AppState {{\n    launches: usize,\n    selected_path: Option<PathBuf>,\n    status: String,\n}}\n\nimpl AppState {{\n    /// Returns the current native-runtime status.\n    #[must_use]\n    pub fn status(&self) -> &str {{\n        &self.status\n    }}\n\n    /// Returns the latest path chosen through a native capability.\n    #[must_use]\n    pub fn selected_path(&self) -> Option<&std::path::Path> {{\n        self.selected_path.as_deref()\n    }}\n}}\n\n/// Events accepted by the portable reducer.\n#[derive(Clone, Debug, Eq, PartialEq)]\npub enum AppEvent {{\n    /// The native runtime completed launch.\n    Launched,\n    /// The user requested the native file picker.\n    OpenFile,\n    /// The file picker completed; `None` means cancellation.\n    FileDialogFinished(Option<PathBuf>),\n}}\n\n/// Work delegated to an active target host.\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum AppEffect {{\n    /// Present the platform's file-selection capability.\n    OpenFileDialog,\n}}\n\nimpl ferro_sdk::Application for Application {{\n    type State = AppState;\n    type Event = AppEvent;\n    type Effect = AppEffect;\n\n    fn descriptor() -> ferro_sdk::ApplicationDescriptor {{\n        ferro_sdk::ApplicationDescriptor::new(\"{slug}\", \"{id}\")\n    }}\n\n    fn initial_state() -> Self::State {{\n        AppState {{\n            status: \"Ready\".to_owned(),\n            ..AppState::default()\n        }}\n    }}\n\n    fn reduce(state: &mut Self::State, event: Self::Event) -> Vec<Self::Effect> {{\n        match event {{\n            AppEvent::Launched => {{\n                state.launches += 1;\n                state.status = format!(\"Running (launch #{{}})\", state.launches);\n                Vec::new()\n            }}\n            AppEvent::OpenFile => vec![AppEffect::OpenFileDialog],\n            AppEvent::FileDialogFinished(Some(path)) => {{\n                state.status = format!(\"Selected {{}}\", path.display());\n                state.selected_path = Some(path);\n                Vec::new()\n            }}\n            AppEvent::FileDialogFinished(None) => Vec::new(),\n        }}\n    }}\n}}\n"
     )
 }
 
 fn render_host_manifest(slug: &str, target: Target) -> String {
     let runtime = if target == Target::Macos {
         format!(
-            "ferro-macos-runtime = {{ path = \"{}\" }}\n",
+            "ferro-macos-runtime = {{ path = \"{}\" }}\nobjc2 = \"0.6.5\"\nobjc2-app-kit = \"0.3.2\"\nobjc2-foundation = \"0.3.2\"\n",
             framework_crate_path("crates/ferro-macos-runtime")
         )
     } else {
@@ -335,13 +335,14 @@ fn render_host_manifest(slug: &str, target: Target) -> String {
 }
 
 fn render_host_source(slug: &str, target: Target) -> String {
+    let crate_ident = slug.replace('-', "_");
     if target == Target::Macos {
         return format!(
-            "fn main() {{\n    ferro_macos_runtime::run::<{slug}_core::Application>();\n}}\n"
+            "use std::cell::OnceCell;\n\nuse ferro_sdk::Lifecycle;\nuse objc2::MainThreadMarker;\nuse objc2::rc::Retained;\nuse objc2_app_kit::{{NSFont, NSTextField, NSWindow}};\nuse objc2_foundation::{{NSPoint, NSRect, NSSize, NSString}};\n\nuse {crate_ident}_core::{{AppEffect, AppEvent, AppState, Application}};\nuse ferro_macos_runtime::{{CommandId, FileDialogResult, MacosCapabilities, MacosCommand, MacosEventSender, MacosHost, OpenPanelMode}};\n\n#[derive(Default)]\nstruct MacosApp {{\n    status: OnceCell<Retained<NSTextField>>,\n    selected_path: OnceCell<Retained<NSTextField>>,\n}}\n\nimpl MacosHost<Application> for MacosApp {{\n    fn build(&mut self, window: &NSWindow, main_thread: MainThreadMarker, _sender: MacosEventSender<AppEvent>) {{\n        let content = window.contentView().expect(\"runtime windows have a content view\");\n        let title = NSTextField::labelWithString(&NSString::from_str(\"{slug}\"), main_thread);\n        title.setFrame(NSRect::new(NSPoint::new(32.0, 390.0), NSSize::new(736.0, 36.0)));\n        title.setFont(Some(&NSFont::systemFontOfSize(28.0)));\n        let status = NSTextField::labelWithString(&NSString::from_str(\"Starting…\"), main_thread);\n        status.setFrame(NSRect::new(NSPoint::new(32.0, 340.0), NSSize::new(736.0, 24.0)));\n        let selected_path = NSTextField::labelWithString(&NSString::from_str(\"No file selected\"), main_thread);\n        selected_path.setFrame(NSRect::new(NSPoint::new(32.0, 308.0), NSSize::new(736.0, 24.0)));\n        content.addSubview(&title);\n        content.addSubview(&status);\n        content.addSubview(&selected_path);\n        self.status.set(status).expect(\"host builds once\");\n        self.selected_path.set(selected_path).expect(\"host builds once\");\n    }}\n\n    fn render(&mut self, state: &AppState) {{\n        if let Some(status) = self.status.get() {{\n            status.setStringValue(&NSString::from_str(state.status()));\n        }}\n        if let Some(label) = self.selected_path.get() {{\n            let text = state.selected_path().map_or_else(|| \"No file selected\".to_owned(), |path| path.display().to_string());\n            label.setStringValue(&NSString::from_str(&text));\n        }}\n    }}\n\n    fn commands(&self, _state: &AppState) -> Vec<MacosCommand<AppEvent>> {{\n        vec![MacosCommand::new(CommandId::new(\"file.open\"), \"Open…\", AppEvent::OpenFile).shortcut('o')]\n    }}\n\n    fn lifecycle_event(&mut self, lifecycle: Lifecycle) -> Option<AppEvent> {{\n        (lifecycle == Lifecycle::Launched).then_some(AppEvent::Launched)\n    }}\n\n    fn handle_effect(&mut self, effect: AppEffect, capabilities: MacosCapabilities<AppEvent>) {{\n        match effect {{\n            AppEffect::OpenFileDialog => capabilities.open(OpenPanelMode::Files {{ multiple: false }}, |result| {{\n                let path = match result {{\n                    FileDialogResult::Selected(paths) => paths.into_iter().next(),\n                    FileDialogResult::Cancelled => None,\n                }};\n                AppEvent::FileDialogFinished(path)\n            }}),\n        }}\n    }}\n}}\n\nfn main() {{\n    ferro_macos_runtime::run::<Application, _>(MacosApp::default());\n}}\n"
         );
     }
     format!(
-        "use ferro_sdk::Application as _;\n\nfn main() {{\n    let descriptor = {slug}_core::Application::descriptor();\n    println!(\"{slug}: {target} host scaffold (runtime not implemented)\");\n    println!(\"Application id: {{}}\", descriptor.id());\n}}\n"
+        "use ferro_sdk::Application as _;\n\nfn main() {{\n    let descriptor = {crate_ident}_core::Application::descriptor();\n    println!(\"{slug}: {target} host scaffold (runtime not implemented)\");\n    println!(\"Application id: {{}}\", descriptor.id());\n}}\n"
     )
 }
 
@@ -403,8 +404,16 @@ mod tests {
         assert!(
             std::fs::read_to_string(project.join("apps/atlas-app-macos/src/main.rs"))
                 .expect("macOS source")
-                .contains("ferro_macos_runtime::run")
+                .contains("ferro_macos_runtime::run::<Application, _>")
         );
+        let core = std::fs::read_to_string(project.join("crates/atlas-app-core/src/lib.rs"))
+            .expect("portable core source");
+        assert!(core.contains("pub struct AppState"));
+        assert!(core.contains("fn reduce"));
+        let macos = std::fs::read_to_string(project.join("apps/atlas-app-macos/src/main.rs"))
+            .expect("macOS source");
+        assert!(macos.contains("use atlas_app_core"));
+        assert!(macos.contains("OpenPanelMode::Files"));
     }
 
     #[test]

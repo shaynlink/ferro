@@ -94,9 +94,11 @@ cargo run -p ferro-macos
 
 `ferro init` creates a Cargo workspace and a strict `ferro.toml` manifest. Its default targets are
 macOS, Windows, and Linux. On macOS, a project declaring `macos` can use `ferro run` to compile and
-launch its AppKit development window. The generated project links to the checked-out Ferro runtime;
-this is a source-checkout developer preview, not yet a published SDK dependency. Windows and Linux
-remain declarable only. Target builds, signing, packaging, and publishing remain roadmap work.
+launch its AppKit development window. Generated macOS projects contain a portable typed reducer and
+a native host with lifecycle callbacks, a persistent AppKit controller, a File menu (`Cmd+O`) and a
+native file picker. The generated project links to the checked-out Ferro runtime; this is a
+source-checkout developer preview, not yet a published SDK dependency. Windows and Linux remain
+declarable only. Target builds, signing, packaging, and publishing remain roadmap work.
 
 ## Roadmap
 
