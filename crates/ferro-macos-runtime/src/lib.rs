@@ -14,9 +14,9 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSEventModifierFlags, NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSSavePanel,
-    NSWindow, NSWindowStyleMask,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSApplicationActivationPolicy,
+    NSApplicationDelegate, NSBackingStoreType, NSEventModifierFlags, NSMenu, NSMenuItem,
+    NSModalResponseOK, NSOpenPanel, NSSavePanel, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
@@ -99,6 +99,26 @@ pub enum OpenPanelMode {
     Folder,
 }
 
+/// Severity used by a native macOS alert.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlertKind {
+    /// Informational message.
+    Information,
+    /// Warning requiring the user's attention.
+    Warning,
+    /// Critical error message.
+    Critical,
+}
+
+/// Result selected in a native confirmation dialogue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Confirmation {
+    /// The user selected the primary action.
+    Accepted,
+    /// The user selected cancel or dismissed the alert.
+    Cancelled,
+}
+
 /// Sender retained by native controls to dispatch application events on the main thread.
 #[derive(Clone)]
 pub struct MacosEventSender<E>(Rc<dyn Fn(E)>);
@@ -117,6 +137,41 @@ pub struct MacosCapabilities<E> {
 }
 
 impl<E: 'static> MacosCapabilities<E> {
+    /// Presents a native informational, warning or critical alert.
+    pub fn alert(&self, kind: AlertKind, title: &str, message: &str) {
+        let alert = NSAlert::init(NSAlert::alloc(self.main_thread));
+        alert.setAlertStyle(match kind {
+            AlertKind::Information => NSAlertStyle::Informational,
+            AlertKind::Warning => NSAlertStyle::Warning,
+            AlertKind::Critical => NSAlertStyle::Critical,
+        });
+        alert.setMessageText(&NSString::from_str(title));
+        alert.setInformativeText(&NSString::from_str(message));
+        alert.runModal();
+    }
+
+    /// Presents a native confirmation alert with explicit primary and cancel labels.
+    #[must_use]
+    pub fn confirm(
+        &self,
+        title: &str,
+        message: &str,
+        accept_label: &str,
+        cancel_label: &str,
+    ) -> Confirmation {
+        let alert = NSAlert::init(NSAlert::alloc(self.main_thread));
+        alert.setAlertStyle(NSAlertStyle::Warning);
+        alert.setMessageText(&NSString::from_str(title));
+        alert.setInformativeText(&NSString::from_str(message));
+        alert.addButtonWithTitle(&NSString::from_str(accept_label));
+        alert.addButtonWithTitle(&NSString::from_str(cancel_label));
+        if alert.runModal() == NSAlertFirstButtonReturn {
+            Confirmation::Accepted
+        } else {
+            Confirmation::Cancelled
+        }
+    }
+
     /// Opens a native panel and dispatches its result as an application event.
     pub fn open(&self, mode: OpenPanelMode, map_result: impl FnOnce(FileDialogResult) -> E) {
         let panel = NSOpenPanel::openPanel(self.main_thread);

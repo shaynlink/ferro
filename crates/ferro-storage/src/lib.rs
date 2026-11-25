@@ -4,4 +4,4 @@
 
 mod liliadb;
 
-pub use liliadb::{PersistentRecentWorkspaceStore, WorkspaceDatabase};
+pub use liliadb::{LiliaApplicationStorage, PersistentRecentWorkspaceStore, WorkspaceDatabase};

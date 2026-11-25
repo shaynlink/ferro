@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 ferro-contracts = { path = "../ferro-contracts" }
 ferro-domain = { path = "../ferro-domain" }
+ferro-sdk = { path = "../ferro-sdk" }
 lilia-db = { git = "https://github.com/shaynlink/liliadb.git", rev = "bd3020dea12ea9430078955ece8bc327af6fd7df", package = "lilia-db", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

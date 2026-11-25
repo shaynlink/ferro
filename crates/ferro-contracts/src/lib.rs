@@ -3,6 +3,69 @@
 use ferro_domain::{
     Workspace, WorkspaceActivityPoint, WorkspaceArtifact, WorkspaceRelationship, WorkspaceSearchHit,
 };
+use ferro_sdk::FerroError;
+use std::path::{Path, PathBuf};
+
+/// A recently used file or directory retained by an application.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecentResource {
+    path: PathBuf,
+}
+
+impl RecentResource {
+    /// Creates a recent resource from a native path.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Returns the retained path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Optional application preferences service.
+pub trait Preferences {
+    /// Loads a UTF-8 preference value, or `None` when no value is present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] when the configured persistence service cannot read the value.
+    fn get(&self, key: &str) -> Result<Option<String>, FerroError>;
+
+    /// Stores a UTF-8 preference value under `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] when the configured persistence service cannot write the value.
+    fn set(&mut self, key: &str, value: &str) -> Result<(), FerroError>;
+
+    /// Removes the value at `key`; a missing key is successful.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] when the configured persistence service cannot remove the value.
+    fn remove(&mut self, key: &str) -> Result<(), FerroError>;
+}
+
+/// Optional most-recently-used file and folder service.
+pub trait RecentResources {
+    /// Returns resources in most-recent-first order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] when the configured persistence service cannot read recents.
+    fn recent(&self) -> Result<Vec<RecentResource>, FerroError>;
+
+    /// Records a resource as most recently used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] when the configured persistence service cannot write recents.
+    fn remember(&mut self, resource: RecentResource) -> Result<(), FerroError>;
+}
 
 /// Persistence boundary for the user's recently opened workspaces.
 pub trait RecentWorkspaceStore {
