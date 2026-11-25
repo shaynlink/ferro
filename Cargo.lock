@@ -369,6 +369,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-macos-runtime"
+version = "0.1.0"
+dependencies = [
+ "ferro-sdk",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "ferro-project"
 version = "0.1.0"
 dependencies = [
