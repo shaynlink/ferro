@@ -33,10 +33,12 @@ The public workflow will be built incrementally:
    requires it.
 5. Package and release each target using its native signing and distribution conventions.
 
-Today, `ferro init`, `ferro doctor`, and `ferro target list` establish the first part of this
-workflow. `ferro init` writes a strict, versioned `ferro.toml` manifest and creates a Cargo
-workspace containing a shared core plus one scaffold host per declared desktop target. Target
-selection, build orchestration, runtime management, and publishing commands remain to be shipped.
+Today, `ferro init`, `ferro doctor`, `ferro run`, and `ferro target list` establish the first part
+of this workflow. `ferro init` writes a strict, versioned `ferro.toml` manifest and creates a Cargo
+workspace containing a shared core plus one scaffold host per declared desktop target. On macOS,
+`ferro run --project <path>` compiles and launches the generated AppKit host when `macos` is
+declared. It is a local-development runtime only: the generated project currently points at the
+checked-out Ferro source, and packaging, signing, and publishing remain out of scope.
 
 ## Project contract
 
@@ -59,10 +61,10 @@ and later device families without treating desktop assumptions as universal.
 
 ## Delivery sequence
 
-1. **Desktop foundation** — define the manifest, CLI contract, SDK package boundaries, and
-   supported macOS/Windows/Linux development workflow.
+1. **Desktop foundation** — define the manifest, CLI contract, SDK package boundaries, and the
+   supported macOS development workflow.
 2. **Supported desktop targets** — prove native runtimes, builds, diagnostics, packaging, and
-   integration testing on every desktop OS.
+   integration testing on Windows and Linux as well as macOS.
 3. **Mobile foundation** — define the target lifecycle and native bridge model, then validate iOS
    and Android independently.
 4. **Additional surfaces** — add watch, TV, automotive, or other targets only with a concrete

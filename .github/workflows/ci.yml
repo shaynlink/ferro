@@ -26,7 +26,7 @@ jobs:
         if: runner.os == 'macOS'
       - run: cargo test --workspace
         if: runner.os == 'macOS'
-      - run: cargo clippy --workspace --exclude ferro-macos --all-targets -- -D warnings
+      - run: cargo clippy --workspace --exclude ferro-macos --exclude ferro-macos-runtime --all-targets -- -D warnings
         if: runner.os != 'macOS'
-      - run: cargo test --workspace --exclude ferro-macos
+      - run: cargo test --workspace --exclude ferro-macos --exclude ferro-macos-runtime
         if: runner.os != 'macOS'

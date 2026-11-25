@@ -34,7 +34,7 @@ The initial target family is desktop:
 
 | Target | Direction | Current repository state |
 |---|---|---|
-| macOS | Native macOS runtime, currently AppKit-based | Reference host exists |
+| macOS | Native AppKit development runtime | Local development supported |
 | Windows | Native Windows runtime to be validated | Placeholder only |
 | Linux | Native Linux runtime to be validated | Placeholder only |
 | iOS / Android | Mobile runtime and lifecycle adapters | Future target family |
@@ -68,7 +68,8 @@ ferro CLI and project manifests
   design crate contains semantic intent, never a fake universal widget kit.
 - `ferro-sdk` provides the small, platform-neutral public vocabulary shared by project tooling and
   future target adapters. `ferro-project` owns strict parsing and validation of the versioned
-  `ferro.toml` project contract.
+  `ferro.toml` project contract. `ferro-macos-runtime` owns AppKit startup and the native
+  development window; it depends only on the portable `ferro-sdk` application contract.
 - `apps/ferro-*` are target-host experiments and reference runtimes, not Ferro's end-user
   application. They may depend on shared crates; they never depend on one another.
 - `tools/ferro-cli` is the seed of the developer experience. It will grow around an explicit
@@ -94,6 +95,8 @@ Development currently starts on macOS because that is the available machine, but
 not proof of a framework target. CI runs Rust quality checks on macOS, Windows, and Linux; each
 future target needs native runtime, packaging, and accessibility validation on its own platform.
 
-The project model and its `init`, `doctor`, and target-discovery commands now form the first CLI/SDK
-contract. The next architectural milestone is turning declared desktop targets into supported
-native development and build targets.
+The project model and its `init`, `doctor`, `run`, and target-discovery commands form the first
+CLI/SDK contract. macOS is now a supported native local-development target: its generated host
+implements the SDK metadata entry point and delegates lifecycle and presentation to the AppKit
+runtime. The next architectural milestone is proving equivalent native development targets on
+Windows and Linux before target packaging and distribution work begins.

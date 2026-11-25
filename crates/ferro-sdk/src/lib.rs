@@ -100,9 +100,26 @@ impl ApplicationDescriptor {
     }
 }
 
+/// Metadata entry point implemented by a Ferro application.
+///
+/// Target runtimes obtain portable application metadata through this trait, then retain ownership
+/// of native lifecycle and presentation behaviour.
+pub trait Application {
+    /// Returns the application's stable descriptor.
+    fn descriptor() -> ApplicationDescriptor;
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Target;
+    use super::{Application, ApplicationDescriptor, Target};
+
+    struct Atlas;
+
+    impl Application for Atlas {
+        fn descriptor() -> ApplicationDescriptor {
+            ApplicationDescriptor::new("Atlas", "dev.ferro.atlas")
+        }
+    }
 
     #[test]
     fn parses_known_desktop_targets() {
@@ -117,5 +134,11 @@ mod tests {
             "ios".parse::<Target>().unwrap_err().to_string(),
             "unknown Ferro target `ios`"
         );
+    }
+
+    #[test]
+    fn applications_expose_portable_metadata() {
+        assert_eq!(Atlas::descriptor().name(), "Atlas");
+        assert_eq!(Atlas::descriptor().id(), "dev.ferro.atlas");
     }
 }

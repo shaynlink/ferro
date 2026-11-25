@@ -34,7 +34,7 @@ Read [the framework guide](docs/framework.md) for the intended developer model a
 This repository is an early bootstrap, not a general-purpose SDK release. It currently contains:
 
 - a Rust workspace and cross-OS quality-gate matrix;
-- an embryonic `ferro` developer CLI (`init`, `doctor`, target discovery, and storage diagnostics);
+- an embryonic `ferro` developer CLI (`init`, `doctor`, `run`, target discovery, and storage diagnostics);
 - shared crates that prove the intended package boundaries;
 - macOS, Windows, and Linux host placeholders, with a small AppKit reference host on macOS;
 - an internal LiliaDB-backed storage experiment.
@@ -80,22 +80,27 @@ cargo test --workspace
 # Inspect the local development environment.
 cargo run -p ferro -- doctor
 
-# Create a portable desktop project scaffold.
-cargo run -p ferro -- init /tmp/atlas
+# Create and run a macOS development project.
+cargo run -p ferro -- init /tmp/atlas --targets macos
 cargo run -p ferro -- doctor --project /tmp/atlas
+cargo run -p ferro -- run --project /tmp/atlas
+
+# Inspect every target known by this Ferro version.
 cargo run -p ferro -- target list
 
-# Launch the macOS reference host (not a Ferro application template).
+# Launch the repository's AppKit reference host (not a Ferro application template).
 cargo run -p ferro-macos
 ```
 
 `ferro init` creates a Cargo workspace and a strict `ferro.toml` manifest. Its default targets are
-macOS, Windows, and Linux; only the macOS reference host exists today. Development runtime
-management, target builds, signing, packaging, and publishing remain roadmap work.
+macOS, Windows, and Linux. On macOS, a project declaring `macos` can use `ferro run` to compile and
+launch its AppKit development window. The generated project links to the checked-out Ferro runtime;
+this is a source-checkout developer preview, not yet a published SDK dependency. Windows and Linux
+remain declarable only. Target builds, signing, packaging, and publishing remain roadmap work.
 
 ## Roadmap
 
-1. Turn the declared desktop target adapters into supported development and build targets.
+1. Graduate Windows and Linux to supported native development targets.
 2. Establish a mobile target abstraction and validate iOS and Android with focused native spikes.
 3. Add repeatable packaging, signing, and release workflows per target.
 4. Extend to additional device surfaces only after the core project and target model is stable.

@@ -1,0 +1,24 @@
+[package]
+name = "ferro-macos-runtime"
+description = "Native AppKit development runtime for Ferro applications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferro-sdk = { path = "../ferro-sdk" }
+objc2 = "0.6.5"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+
+[lints.rust]
+# AppKit construction crosses an FFI boundary. Keep unsafe isolated to this runtime crate.
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
