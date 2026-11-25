@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 use clap::{Parser, Subcommand};
 use ferro_contracts::WorkspaceMaintenance;
@@ -32,11 +34,7 @@ enum Command {
         #[arg(long)]
         id: Option<String>,
         /// Comma-separated desktop targets.
-        #[arg(
-            long,
-            value_delimiter = ',',
-            default_values = ["macos", "windows", "linux"]
-        )]
+        #[arg(long, value_delimiter = ',', default_value = "macos")]
         targets: Vec<Target>,
     },
     /// Inspect the local toolchain and an optional Ferro project.
@@ -51,6 +49,32 @@ enum Command {
         #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Declared target to launch.
+        #[arg(long, default_value = "macos")]
+        target: Target,
+    },
+    /// Build a native application bundle.
+    Build {
+        /// Target to build.
+        target: Target,
+        /// Project directory containing ferro.toml.
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Build an optimized release bundle instead of a debug bundle.
+        #[arg(long)]
+        release: bool,
+        /// Directory in which to write the .app bundle.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Override the macOS signing identity declared in ferro.toml.
+        #[arg(long)]
+        sign: Option<String>,
+    },
+    /// Build, launch, and restart a native target when its sources change.
+    Dev {
+        /// Project directory containing ferro.toml.
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Declared target to develop.
         #[arg(long, default_value = "macos")]
         target: Target,
     },
@@ -78,6 +102,23 @@ fn main() {
         Command::Init { path, id, targets } => init_project(&path, id, targets),
         Command::Doctor { project } => doctor(&project),
         Command::Run { project, target } => run_project(&project, target),
+        Command::Build {
+            target,
+            project,
+            release,
+            output,
+            sign,
+        } => build_project(
+            &project,
+            target,
+            BuildOptions {
+                release,
+                output,
+                signing_identity: sign,
+            },
+        )
+        .map(|bundle| println!("Built {}", bundle.path.display())),
+        Command::Dev { project, target } => develop_project(&project, target),
         Command::Target {
             command: TargetCommand::List,
         } => {
@@ -160,12 +201,21 @@ fn init_project(path: &Path, id: Option<String>, targets: Vec<Target>) -> Result
 fn doctor(project: &Path) -> Result<(), String> {
     println!("Ferro doctor");
     println!("- Host OS: {}", std::env::consts::OS);
-    match ProcessCommand::new("rustc").arg("--version").output() {
-        Ok(output) if output.status.success() => {
-            println!("- Rust: {}", String::from_utf8_lossy(&output.stdout).trim());
-        }
-        Ok(_) => println!("- Rust: unavailable (rustc --version failed)"),
-        Err(error) => println!("- Rust: unavailable ({error})"),
+    let mut failures = Vec::new();
+    inspect_tool("Rust", "rustc", &["--version"], &mut failures);
+    inspect_tool("Cargo", "cargo", &["--version"], &mut failures);
+    if std::env::consts::OS == "macos" {
+        inspect_tool("Xcode", "xcodebuild", &["-version"], &mut failures);
+        inspect_tool(
+            "Code signing",
+            "xcrun",
+            &["--find", "codesign"],
+            &mut failures,
+        );
+    } else {
+        failures.push("macOS builds require a macOS host with Xcode".to_owned());
+        println!("- Xcode: unavailable (macOS host required)");
+        println!("- Code signing: unavailable (macOS host required)");
     }
 
     let manifest_path = project.join("ferro.toml");
@@ -179,35 +229,114 @@ fn doctor(project: &Path) -> Result<(), String> {
             for target in manifest.targets() {
                 println!("- Target {target}: {}", target_status(*target));
             }
+            if manifest.targets().contains(&Target::Macos) {
+                let slug = project_slug(project)?;
+                let host = project.join("apps").join(format!("{slug}-macos"));
+                if host.join("Cargo.toml").is_file() && host.join("src/main.rs").is_file() {
+                    println!("- macOS host: ready ({})", host.display());
+                } else {
+                    let message = format!("generated macOS host is missing at {}", host.display());
+                    println!("- macOS host: invalid ({message})");
+                    failures.push(message);
+                }
+            }
+            inspect_signing_identity(manifest.macos().signing_identity(), &mut failures);
         }
         Err(ProjectError::Read { error, .. }) if error.kind() == std::io::ErrorKind::NotFound => {
             println!("- Project: no ferro.toml at {}", manifest_path.display());
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => failures.push(error.to_string()),
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "doctor found {} issue(s): {}",
+            failures.len(),
+            failures.join("; ")
+        ))
+    }
 }
 
 fn run_project(project: &Path, target: Target) -> Result<(), String> {
-    run_project_with(project, target, |command| {
-        let status = command
-            .status()
-            .map_err(|error| format!("could not start Cargo: {error}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "Cargo failed while running the {target} target ({status})"
-            ))
-        }
-    })
+    let bundle = build_project(project, target, BuildOptions::default())?;
+    let status = ProcessCommand::new(&bundle.executable)
+        .current_dir(project)
+        .status()
+        .map_err(|error| format!("could not launch {}: {error}", bundle.path.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the {target} application exited unsuccessfully ({status})"
+        ))
+    }
 }
 
-fn run_project_with(
+#[derive(Clone, Debug, Default)]
+struct BuildOptions {
+    release: bool,
+    output: Option<PathBuf>,
+    signing_identity: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct BuiltBundle {
+    path: PathBuf,
+    executable: PathBuf,
+}
+
+fn build_project(
     project: &Path,
     target: Target,
-    execute: impl FnOnce(&mut ProcessCommand) -> Result<(), String>,
-) -> Result<(), String> {
+    options: BuildOptions,
+) -> Result<BuiltBundle, String> {
+    let (manifest, slug) = load_macos_project(project, target)?;
+    let package = format!("{slug}-{target}");
+    let mut command = ProcessCommand::new("cargo");
+    command.args(["build", "--package", &package]);
+    if options.release {
+        command.arg("--release");
+    }
+    let status = command
+        .current_dir(project)
+        .status()
+        .map_err(|error| format!("could not start Cargo: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "Cargo failed while building the {target} target ({status})"
+        ));
+    }
+
+    let profile = if options.release { "release" } else { "debug" };
+    let executable = project.join("target").join(profile).join(&package);
+    if !executable.is_file() {
+        return Err(format!(
+            "Cargo completed but did not produce the expected executable `{}`",
+            executable.display()
+        ));
+    }
+    let output = options.output.unwrap_or_else(|| {
+        project
+            .join("target")
+            .join("ferro")
+            .join("macos")
+            .join(profile)
+    });
+    assemble_macos_bundle(
+        &output,
+        manifest.application().name(),
+        manifest.application().id(),
+        &package,
+        &executable,
+        options
+            .signing_identity
+            .as_deref()
+            .or(manifest.macos().signing_identity()),
+    )
+}
+
+fn load_macos_project(project: &Path, target: Target) -> Result<(ProjectManifest, String), String> {
     let manifest_path = project.join("ferro.toml");
     let manifest = ProjectManifest::load(&manifest_path).map_err(|error| error.to_string())?;
     if !manifest.targets().contains(&target) {
@@ -226,12 +355,296 @@ fn run_project_with(
     }
 
     let slug = project_slug(project)?;
-    let package = format!("{slug}-{target}");
-    let mut command = ProcessCommand::new("cargo");
-    command
-        .args(["run", "--package", &package])
-        .current_dir(project);
-    execute(&mut command)
+    let host = project.join("apps").join(format!("{slug}-macos"));
+    if !host.join("Cargo.toml").is_file() || !host.join("src/main.rs").is_file() {
+        return Err(format!(
+            "generated macOS host is missing at {}",
+            host.display()
+        ));
+    }
+    Ok((manifest, slug))
+}
+
+fn develop_project(project: &Path, target: Target) -> Result<(), String> {
+    let mut bundle = build_project(project, target, BuildOptions::default())?;
+    println!("Launching {}", bundle.path.display());
+    let mut child = launch_bundle(&bundle, project)?;
+    let mut fingerprint = watch_fingerprint(project)?;
+
+    loop {
+        thread::sleep(Duration::from_millis(300));
+        let next = watch_fingerprint(project)?;
+        if next != fingerprint {
+            fingerprint = next;
+            println!("Change detected; rebuilding macOS application…");
+            match build_project(project, target, BuildOptions::default()) {
+                Ok(next_bundle) => {
+                    if child
+                        .try_wait()
+                        .map_err(|error| error.to_string())?
+                        .is_none()
+                    {
+                        child
+                            .kill()
+                            .map_err(|error| format!("could not stop application: {error}"))?;
+                        child
+                            .wait()
+                            .map_err(|error| format!("could not wait for application: {error}"))?;
+                    }
+                    bundle = next_bundle;
+                    println!("Restarting {}", bundle.path.display());
+                    child = launch_bundle(&bundle, project)?;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "ferro dev: rebuild failed; keeping the running application: {error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn launch_bundle(bundle: &BuiltBundle, project: &Path) -> Result<std::process::Child, String> {
+    ProcessCommand::new(&bundle.executable)
+        .current_dir(project)
+        .spawn()
+        .map_err(|error| format!("could not launch {}: {error}", bundle.path.display()))
+}
+
+fn assemble_macos_bundle(
+    output: &Path,
+    application_name: &str,
+    application_id: &str,
+    executable_name: &str,
+    executable: &Path,
+    signing_identity: Option<&str>,
+) -> Result<BuiltBundle, String> {
+    fs::create_dir_all(output).map_err(|error| {
+        format!(
+            "could not create bundle output `{}`: {error}",
+            output.display()
+        )
+    })?;
+    let bundle_name = safe_bundle_name(application_name);
+    let bundle = output.join(format!("{bundle_name}.app"));
+    let staging = output.join(format!(
+        ".{bundle_name}.app.ferro-staging-{}",
+        std::process::id()
+    ));
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|error| {
+            format!(
+                "could not clear staging bundle `{}`: {error}",
+                staging.display()
+            )
+        })?;
+    }
+    let contents = staging.join("Contents");
+    let macos = contents.join("MacOS");
+    fs::create_dir_all(&macos)
+        .map_err(|error| format!("could not create bundle contents: {error}"))?;
+    fs::write(
+        contents.join("Info.plist"),
+        macos_info_plist(application_name, application_id, executable_name),
+    )
+    .map_err(|error| format!("could not write bundle Info.plist: {error}"))?;
+    let bundled_executable = macos.join(executable_name);
+    fs::copy(executable, &bundled_executable).map_err(|error| {
+        format!(
+            "could not copy executable `{}` into bundle: {error}",
+            executable.display()
+        )
+    })?;
+
+    if let Some(identity) = signing_identity {
+        sign_bundle(&staging, identity)?;
+    }
+    if bundle.exists() {
+        fs::remove_dir_all(&bundle).map_err(|error| {
+            format!(
+                "could not replace existing bundle `{}`: {error}",
+                bundle.display()
+            )
+        })?;
+    }
+    fs::rename(&staging, &bundle)
+        .map_err(|error| format!("could not finalize bundle `{}`: {error}", bundle.display()))?;
+    Ok(BuiltBundle {
+        executable: bundle.join("Contents").join("MacOS").join(executable_name),
+        path: bundle,
+    })
+}
+
+fn sign_bundle(bundle: &Path, identity: &str) -> Result<(), String> {
+    let status = ProcessCommand::new("codesign")
+        .args(["--force", "--sign", identity, "--timestamp=none"])
+        .arg(bundle)
+        .status()
+        .map_err(|error| format!("could not start codesign: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "codesign failed for `{}` ({status})",
+            bundle.display()
+        ));
+    }
+    let status = ProcessCommand::new("codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(bundle)
+        .status()
+        .map_err(|error| format!("could not verify bundle signature: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "codesign verification failed for `{}` ({status})",
+            bundle.display()
+        ))
+    }
+}
+
+fn macos_info_plist(application_name: &str, application_id: &str, executable_name: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>CFBundleDisplayName</key>\n  <string>{}</string>\n  <key>CFBundleExecutable</key>\n  <string>{}</string>\n  <key>CFBundleIdentifier</key>\n  <string>{}</string>\n  <key>CFBundleInfoDictionaryVersion</key>\n  <string>6.0</string>\n  <key>CFBundleName</key>\n  <string>{}</string>\n  <key>CFBundlePackageType</key>\n  <string>APPL</string>\n  <key>CFBundleShortVersionString</key>\n  <string>0.1.0</string>\n  <key>CFBundleVersion</key>\n  <string>1</string>\n</dict>\n</plist>\n",
+        xml_escape(application_name),
+        xml_escape(executable_name),
+        xml_escape(application_id),
+        xml_escape(application_name)
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn safe_bundle_name(name: &str) -> String {
+    let name = name
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '\0' => '-',
+            _ => character,
+        })
+        .collect::<String>();
+    if name.trim().is_empty() {
+        "Ferro".to_owned()
+    } else {
+        name
+    }
+}
+
+fn watch_fingerprint(project: &Path) -> Result<Vec<(PathBuf, SystemTime, u64)>, String> {
+    let mut entries = Vec::new();
+    collect_watch_entries(project, project, &mut entries)?;
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(entries)
+}
+
+fn collect_watch_entries(
+    root: &Path,
+    directory: &Path,
+    entries: &mut Vec<(PathBuf, SystemTime, u64)>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("could not inspect `{}`: {error}", directory.display()))?
+    {
+        let entry = entry.map_err(|error| format!("could not inspect project file: {error}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("could not inspect `{}`: {error}", path.display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            if name == "target" || name == ".git" {
+                continue;
+            }
+            collect_watch_entries(root, &path, entries)?;
+        } else if file_type.is_file() && watched_file(root, &path) {
+            let metadata = entry
+                .metadata()
+                .map_err(|error| format!("could not inspect `{}`: {error}", path.display()))?;
+            entries.push((
+                path.strip_prefix(root).unwrap_or(&path).to_owned(),
+                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                metadata.len(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn watched_file(root: &Path, path: &Path) -> bool {
+    if path.extension().is_some_and(|extension| extension == "rs") {
+        return true;
+    }
+    matches!(
+        path.strip_prefix(root)
+            .ok()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str()),
+        Some("Cargo.toml" | "Cargo.lock" | "ferro.toml")
+    )
+}
+
+fn inspect_tool(label: &str, tool: &str, arguments: &[&str], failures: &mut Vec<String>) {
+    match ProcessCommand::new(tool).args(arguments).output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let version = stdout.lines().next().unwrap_or("available");
+            println!("- {label}: {version}");
+        }
+        Ok(output) => {
+            let message = format!("{tool} {} failed ({})", arguments.join(" "), output.status);
+            println!("- {label}: unavailable ({message})");
+            failures.push(message);
+        }
+        Err(error) => {
+            let message = format!("{tool} is unavailable ({error})");
+            println!("- {label}: unavailable ({error})");
+            failures.push(message);
+        }
+    }
+}
+
+fn inspect_signing_identity(identity: Option<&str>, failures: &mut Vec<String>) {
+    let Some(identity) = identity else {
+        println!("- Signing identity: not configured (local bundles remain unsigned)");
+        return;
+    };
+    if std::env::consts::OS != "macos" {
+        failures.push(format!("signing identity `{identity}` requires macOS"));
+        return;
+    }
+    match ProcessCommand::new("security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .output()
+    {
+        Ok(output)
+            if output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains(identity) =>
+        {
+            println!("- Signing identity: available ({identity})");
+        }
+        Ok(_) => {
+            let message = format!(
+                "configured signing identity `{identity}` is not available in the keychain"
+            );
+            println!("- Signing identity: unavailable ({message})");
+            failures.push(message);
+        }
+        Err(error) => {
+            let message = format!("could not inspect signing identities: {error}");
+            println!("- Signing identity: unavailable ({message})");
+            failures.push(message);
+        }
+    }
 }
 
 fn list_targets() {
@@ -243,7 +656,7 @@ fn list_targets() {
 
 fn target_status(target: Target) -> &'static str {
     match target {
-        Target::Macos => "supported for local development on macOS; packaging is not yet supported",
+        Target::Macos => "supported for local development and Debug/Release .app bundles on macOS",
         Target::Windows | Target::Linux => "declarable; native runtime is not implemented",
     }
 }
@@ -363,7 +776,7 @@ fn framework_crate_path(relative: &str) -> String {
 
 fn render_project_readme(slug: &str, id: &str, targets: &[Target]) -> String {
     format!(
-        "# {slug}\n\nFerro application scaffold.\n\n- Application id: `{id}`\n- Declared targets: {}\n\nRun `ferro doctor --project .` to inspect this project. On macOS, run `ferro run --project .` to launch the native development runtime. Enable optional LiliaDB-backed preferences and recents with `cargo run -p {slug}-macos --features persistence`. SQLite is not supported. Packaging is not yet implemented.\n",
+        "# {slug}\n\nFerro application scaffold.\n\n- Application id: `{id}`\n- Declared targets: {}\n\nOn macOS, `ferro doctor --project .` verifies Rust, Xcode and this project. `ferro run --project .` creates a Debug `.app` bundle and launches it. `ferro dev --project .` watches Rust and Cargo sources, then rebuilds and relaunches after a successful change. `ferro build macos --project .` writes a Debug bundle under `target/ferro/macos/debug`; add `--release` for an optimized bundle or `--output <directory>` to choose another directory. Local bundles are unsigned unless `[macos] signing_identity` is configured in `ferro.toml` or `--sign <identity>` is supplied. Enable optional LiliaDB-backed preferences and recents with `cargo run -p {slug}-macos --features persistence`. SQLite is not supported. Notarization and distribution are not included.\n",
         join_targets(targets)
     )
 }
@@ -381,22 +794,25 @@ mod tests {
     use clap::Parser;
     use ferro_project::ProjectManifest;
 
-    use super::{Cli, Command, init_project, project_slug, run_project_with};
+    use super::{
+        Cli, Command, assemble_macos_bundle, init_project, load_macos_project, macos_info_plist,
+        project_slug, safe_bundle_name, watch_fingerprint,
+    };
 
     #[test]
-    fn initializes_a_desktop_project() {
+    fn initializes_a_macos_project() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let project = directory.path().join("Atlas App");
 
-        init_project(&project, None, ferro_sdk::Target::all().to_vec()).expect("create project");
+        init_project(&project, None, vec![ferro_sdk::Target::Macos]).expect("create project");
 
         let manifest = ProjectManifest::load(project.join("ferro.toml")).expect("project manifest");
         assert_eq!(manifest.application().id(), "dev.ferro.atlas-app");
-        assert_eq!(manifest.targets(), ferro_sdk::Target::all());
+        assert_eq!(manifest.targets(), [ferro_sdk::Target::Macos]);
         assert!(project.join("crates/atlas-app-core/src/lib.rs").is_file());
         assert!(project.join("apps/atlas-app-macos/src/main.rs").is_file());
-        assert!(project.join("apps/atlas-app-windows/src/main.rs").is_file());
-        assert!(project.join("apps/atlas-app-linux/src/main.rs").is_file());
+        assert!(!project.join("apps/atlas-app-windows/src/main.rs").exists());
+        assert!(!project.join("apps/atlas-app-linux/src/main.rs").exists());
         assert!(
             std::fs::read_to_string(project.join("apps/atlas-app-macos/Cargo.toml"))
                 .expect("macOS manifest")
@@ -420,21 +836,61 @@ mod tests {
                 .expect("macOS manifest");
         assert!(macos_manifest.contains("persistence = [\"dep:ferro-storage\"]"));
         assert!(!macos_manifest.contains("sqlite"));
+        assert!(
+            std::fs::read_to_string(project.join("README.md"))
+                .expect("project README")
+                .contains("ferro build macos")
+        );
     }
 
     #[test]
     fn refuses_an_existing_project_directory() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        assert!(init_project(directory.path(), None, ferro_sdk::Target::all().to_vec()).is_err());
+        assert!(init_project(directory.path(), None, vec![ferro_sdk::Target::Macos]).is_err());
     }
 
     #[test]
-    fn parses_default_desktop_targets() {
+    fn defaults_init_to_macos() {
         let cli = Cli::try_parse_from(["ferro", "init", "atlas"]).expect("parse command");
         let Command::Init { targets, .. } = cli.command else {
             panic!("expected init command");
         };
-        assert_eq!(targets, ferro_sdk::Target::all());
+        assert_eq!(targets, [ferro_sdk::Target::Macos]);
+    }
+
+    #[test]
+    fn parses_build_and_dev_commands() {
+        let cli = Cli::try_parse_from([
+            "ferro",
+            "build",
+            "macos",
+            "--release",
+            "--output",
+            "dist",
+            "--sign",
+            "Developer ID Application: Atlas",
+        ])
+        .expect("parse build command");
+        let Command::Build {
+            target,
+            release,
+            output,
+            sign,
+            ..
+        } = cli.command
+        else {
+            panic!("expected build command");
+        };
+        assert_eq!(target, ferro_sdk::Target::Macos);
+        assert!(release);
+        assert_eq!(output, Some(std::path::PathBuf::from("dist")));
+        assert_eq!(sign.as_deref(), Some("Developer ID Application: Atlas"));
+
+        let cli = Cli::try_parse_from(["ferro", "dev"]).expect("parse dev command");
+        let Command::Dev { target, .. } = cli.command else {
+            panic!("expected dev command");
+        };
+        assert_eq!(target, ferro_sdk::Target::Macos);
     }
 
     #[test]
@@ -446,70 +902,73 @@ mod tests {
     }
 
     #[test]
-    fn prepares_a_macos_run_for_a_declared_target() {
+    fn assembles_a_bundle_with_expected_metadata() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let project = directory.path().join("atlas");
-        init_project(&project, None, vec![ferro_sdk::Target::Macos]).expect("create project");
+        let executable = directory.path().join("atlas-macos");
+        std::fs::write(&executable, "executable").expect("fake executable");
+        let bundle = assemble_macos_bundle(
+            directory.path(),
+            "Atlas App",
+            "dev.ferro.atlas",
+            "atlas-macos",
+            &executable,
+            None,
+        )
+        .expect("assemble bundle");
 
-        #[cfg(target_os = "macos")]
-        run_project_with(&project, ferro_sdk::Target::Macos, |command| {
-            assert_eq!(command.get_program(), "cargo");
-            assert_eq!(
-                command.get_args().collect::<Vec<_>>(),
-                ["run", "--package", "atlas-macos"]
-            );
-            assert_eq!(command.get_current_dir(), Some(project.as_path()));
-            Ok(())
-        })
-        .expect("prepare macOS command");
+        assert_eq!(bundle.path, directory.path().join("Atlas App.app"));
+        assert!(bundle.executable.is_file());
+        let plist =
+            std::fs::read_to_string(bundle.path.join("Contents/Info.plist")).expect("bundle plist");
+        assert!(plist.contains("dev.ferro.atlas"));
+        assert!(plist.contains("atlas-macos"));
     }
 
     #[test]
-    fn rejects_a_target_not_declared_by_the_project() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let project = directory.path().join("atlas");
-        init_project(&project, None, vec![ferro_sdk::Target::Macos]).expect("create project");
-
-        let error = run_project_with(&project, ferro_sdk::Target::Windows, |_| Ok(()))
-            .expect_err("Windows was not declared");
-        assert!(error.contains("does not declare the windows target"));
+    fn renders_a_safe_info_plist() {
+        let plist = macos_info_plist("Atlas & Co", "dev.ferro.atlas", "atlas-macos");
+        assert!(plist.contains("Atlas &amp; Co"));
+        assert!(plist.contains("CFBundlePackageType"));
     }
 
     #[test]
-    fn rejects_a_declared_target_without_a_development_runtime() {
+    fn fingerprints_project_sources_without_target_artifacts() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        std::fs::write(directory.path().join("ferro.toml"), "schema = 1").expect("manifest");
+        std::fs::create_dir_all(directory.path().join("src")).expect("source directory");
+        std::fs::write(directory.path().join("src/lib.rs"), "pub fn atlas() {}").expect("source");
+        std::fs::create_dir_all(directory.path().join("target")).expect("target directory");
+        std::fs::write(directory.path().join("target/generated.rs"), "ignored")
+            .expect("target artifact");
+
+        let fingerprint = watch_fingerprint(directory.path()).expect("fingerprint");
+        assert_eq!(fingerprint.len(), 2);
+    }
+
+    #[test]
+    fn rejects_macos_build_for_an_undeclared_target_before_launching_cargo() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let project = directory.path().join("atlas");
         init_project(&project, None, vec![ferro_sdk::Target::Windows]).expect("create project");
 
-        let error = run_project_with(&project, ferro_sdk::Target::Windows, |_| Ok(()))
-            .expect_err("Windows does not have a runtime");
+        let error = load_macos_project(&project, ferro_sdk::Target::Macos)
+            .expect_err("undeclared target must be rejected");
+        assert!(error.contains("does not declare the macos target"));
+    }
+
+    #[test]
+    fn rejects_a_declared_target_without_a_runtime_before_launching_cargo() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let project = directory.path().join("atlas");
+        init_project(&project, None, vec![ferro_sdk::Target::Windows]).expect("create project");
+
+        let error = load_macos_project(&project, ferro_sdk::Target::Windows)
+            .expect_err("unsupported target must be rejected");
         assert!(error.contains("windows target is declared but has no Ferro development runtime"));
     }
 
     #[test]
-    fn reports_an_invalid_project_manifest() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        std::fs::write(directory.path().join("ferro.toml"), "not = [valid")
-            .expect("write invalid manifest");
-
-        let error = run_project_with(directory.path(), ferro_sdk::Target::Macos, |_| Ok(()))
-            .expect_err("invalid manifest must be rejected");
-        assert!(error.contains("invalid Ferro manifest"));
-    }
-
-    #[test]
-    fn reports_a_cargo_failure() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let project = directory.path().join("atlas");
-        init_project(&project, None, vec![ferro_sdk::Target::Macos]).expect("create project");
-
-        #[cfg(target_os = "macos")]
-        {
-            let error = run_project_with(&project, ferro_sdk::Target::Macos, |_| {
-                Err("Cargo failed while running the macos target (exit status: 1)".to_owned())
-            })
-            .expect_err("Cargo failure must reach the caller");
-            assert!(error.contains("Cargo failed"));
-        }
+    fn normalizes_unsafe_bundle_names() {
+        assert_eq!(safe_bundle_name("Atlas/App"), "Atlas-App");
     }
 }
