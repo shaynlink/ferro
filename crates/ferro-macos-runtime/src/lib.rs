@@ -1,226 +1,55 @@
 //! Native `AppKit` runtime for Ferro application hosts.
 //!
-//! Application state and reducers remain portable. This crate owns the macOS lifecycle, main
-//! window, command routing, and native file panels.
+//! Application state and reducers remain portable. This crate owns the macOS lifecycle,
+//! multi-window management, command/menu routing, background event wake-up, and native OS panels.
+
+mod async_bridge;
+mod capabilities;
+mod menus;
+#[cfg(feature = "preview-webview")]
+pub mod preview_webview;
+pub mod status_bar;
+pub mod view_host;
+mod windows;
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
-use ferro_sdk::{Application, Lifecycle};
+use ferro_sdk::{
+    AppEventProxy, Application, FerroError, FerroErrorKind, Lifecycle, MenuSection,
+    WindowDescriptor, WindowId, WindowLifecycle,
+};
 use ferro_state::Store;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSBackingStoreType, NSEventModifierFlags, NSMenu, NSMenuItem,
-    NSModalResponseOK, NSOpenPanel, NSSavePanel, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSMenu, NSMenuItem,
+    NSWindow,
 };
-use objc2_foundation::{
-    MainThreadMarker, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
-    NSSize, NSString,
+use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
+
+use crate::async_bridge::{
+    MacosEventQueue, clear_main_flusher, create_event_proxy, register_main_flusher,
+};
+use crate::capabilities::WindowController;
+use crate::menus::build_menu_bar;
+use crate::windows::{WindowEventSink, WindowRegistry};
+
+pub use capabilities::{
+    AlertKind, AppearanceMode, CommandId, Confirmation, FileDialogResult, MacosCapabilities,
+    MacosCommand, MacosEventSender, OpenPanelMode, validate_external_url,
 };
 
-/// A stable identifier for a host-defined native command.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommandId(String);
-
-impl CommandId {
-    /// Creates a command identifier.
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-}
-
-/// A menu command rendered by the macOS runtime.
-#[derive(Clone, Debug)]
-pub struct MacosCommand<E> {
-    /// Stable command identifier.
-    pub id: CommandId,
-    /// Menu item title.
-    pub title: String,
-    /// Optional single-character Command-key equivalent.
-    pub shortcut: Option<char>,
-    /// Whether `AppKit` should enable the menu item.
-    pub enabled: bool,
-    /// Event dispatched when the command is selected.
-    pub event: E,
-}
-
-impl<E> MacosCommand<E> {
-    /// Creates an enabled menu command without a shortcut.
-    #[must_use]
-    pub fn new(id: CommandId, title: impl Into<String>, event: E) -> Self {
-        Self {
-            id,
-            title: title.into(),
-            shortcut: None,
-            enabled: true,
-            event,
-        }
-    }
-
-    /// Adds a Command-key shortcut.
-    #[must_use]
-    pub fn shortcut(mut self, shortcut: char) -> Self {
-        self.shortcut = Some(shortcut);
-        self
-    }
-
-    /// Sets command availability.
-    #[must_use]
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
-}
-
-/// Result returned from an `AppKit` open or save panel.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FileDialogResult {
-    /// The user closed the panel without selecting a path.
-    Cancelled,
-    /// The selected file or folder paths.
-    Selected(Vec<PathBuf>),
-}
-
-/// Configuration for an open-panel request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OpenPanelMode {
-    /// Select one or more files.
-    Files {
-        /// Whether `AppKit` permits selecting more than one file.
-        multiple: bool,
-    },
-    /// Select a single folder.
-    Folder,
-}
-
-/// Severity used by a native macOS alert.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AlertKind {
-    /// Informational message.
-    Information,
-    /// Warning requiring the user's attention.
-    Warning,
-    /// Critical error message.
-    Critical,
-}
-
-/// Result selected in a native confirmation dialogue.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Confirmation {
-    /// The user selected the primary action.
-    Accepted,
-    /// The user selected cancel or dismissed the alert.
-    Cancelled,
-}
-
-/// Sender retained by native controls to dispatch application events on the main thread.
-#[derive(Clone)]
-pub struct MacosEventSender<E>(Rc<dyn Fn(E)>);
-
-impl<E> MacosEventSender<E> {
-    /// Dispatches an event through the runtime's store.
-    pub fn dispatch(&self, event: E) {
-        (self.0)(event);
-    }
-}
-
-/// Runtime access to macOS file-selection capabilities.
-pub struct MacosCapabilities<E> {
-    main_thread: MainThreadMarker,
-    sender: MacosEventSender<E>,
-}
-
-impl<E: 'static> MacosCapabilities<E> {
-    /// Presents a native informational, warning or critical alert.
-    pub fn alert(&self, kind: AlertKind, title: &str, message: &str) {
-        let alert = NSAlert::init(NSAlert::alloc(self.main_thread));
-        alert.setAlertStyle(match kind {
-            AlertKind::Information => NSAlertStyle::Informational,
-            AlertKind::Warning => NSAlertStyle::Warning,
-            AlertKind::Critical => NSAlertStyle::Critical,
-        });
-        alert.setMessageText(&NSString::from_str(title));
-        alert.setInformativeText(&NSString::from_str(message));
-        alert.runModal();
-    }
-
-    /// Presents a native confirmation alert with explicit primary and cancel labels.
-    #[must_use]
-    pub fn confirm(
-        &self,
-        title: &str,
-        message: &str,
-        accept_label: &str,
-        cancel_label: &str,
-    ) -> Confirmation {
-        let alert = NSAlert::init(NSAlert::alloc(self.main_thread));
-        alert.setAlertStyle(NSAlertStyle::Warning);
-        alert.setMessageText(&NSString::from_str(title));
-        alert.setInformativeText(&NSString::from_str(message));
-        alert.addButtonWithTitle(&NSString::from_str(accept_label));
-        alert.addButtonWithTitle(&NSString::from_str(cancel_label));
-        if alert.runModal() == NSAlertFirstButtonReturn {
-            Confirmation::Accepted
-        } else {
-            Confirmation::Cancelled
-        }
-    }
-
-    /// Opens a native panel and dispatches its result as an application event.
-    pub fn open(&self, mode: OpenPanelMode, map_result: impl FnOnce(FileDialogResult) -> E) {
-        let panel = NSOpenPanel::openPanel(self.main_thread);
-        match mode {
-            OpenPanelMode::Files { multiple } => {
-                panel.setCanChooseFiles(true);
-                panel.setCanChooseDirectories(false);
-                panel.setAllowsMultipleSelection(multiple);
-            }
-            OpenPanelMode::Folder => {
-                panel.setCanChooseFiles(false);
-                panel.setCanChooseDirectories(true);
-                panel.setAllowsMultipleSelection(false);
-            }
-        }
-        let result = if panel.runModal() == NSModalResponseOK {
-            let paths = panel
-                .URLs()
-                .iter()
-                .filter_map(|url| url.path().map(|path| PathBuf::from(path.to_string())))
-                .collect();
-            FileDialogResult::Selected(paths)
-        } else {
-            FileDialogResult::Cancelled
-        };
-        self.sender.dispatch(map_result(result));
-    }
-
-    /// Opens a native save panel and dispatches its selected path as an application event.
-    pub fn save(&self, suggested_name: &str, map_result: impl FnOnce(FileDialogResult) -> E) {
-        let panel = NSSavePanel::savePanel(self.main_thread);
-        panel.setNameFieldStringValue(&NSString::from_str(suggested_name));
-        let result = if panel.runModal() == NSModalResponseOK {
-            panel
-                .URL()
-                .and_then(|url| url.path())
-                .map_or(FileDialogResult::Cancelled, |path| {
-                    FileDialogResult::Selected(vec![PathBuf::from(path.to_string())])
-                })
-        } else {
-            FileDialogResult::Cancelled
-        };
-        self.sender.dispatch(map_result(result));
-    }
-}
-
-/// Native surface supplied by a generated macOS application host.
+/// Native surface supplied by a macOS application host.
 pub trait MacosHost<A: Application>: 'static {
-    /// Builds durable `AppKit` views in the provided main window.
+    /// Returns the descriptor used to construct the primary application window.
+    fn main_window_descriptor(&self) -> WindowDescriptor {
+        WindowDescriptor::new(WindowId::main(), A::descriptor().name())
+    }
+
+    /// Builds durable `AppKit` views in the primary main window.
     fn build(
         &mut self,
         window: &NSWindow,
@@ -228,14 +57,47 @@ pub trait MacosHost<A: Application>: 'static {
         sender: MacosEventSender<A::Event>,
     );
 
+    /// Builds durable `AppKit` views inside a specific window (primary or secondary).
+    fn build_window(
+        &mut self,
+        id: &WindowId,
+        window: &NSWindow,
+        main_thread: MainThreadMarker,
+        sender: MacosEventSender<A::Event>,
+        _proxy: AppEventProxy<A::Event>,
+    ) {
+        if id.is_main() {
+            self.build(window, main_thread, sender);
+        }
+    }
+
     /// Updates existing native views from the current portable state.
     fn render(&mut self, state: &A::State);
 
-    /// Returns the current menu commands.
-    fn commands(&self, state: &A::State) -> Vec<MacosCommand<A::Event>>;
+    /// Updates a specific window's native views from the current portable state.
+    fn render_window(&mut self, id: &WindowId, state: &A::State) {
+        if id.is_main() {
+            self.render(state);
+        }
+    }
 
-    /// Maps lifecycle changes into optional portable events.
+    /// Returns legacy single-File-menu commands.
+    fn commands(&self, _state: &A::State) -> Vec<MacosCommand<A::Event>> {
+        Vec::new()
+    }
+
+    /// Returns full macOS menu-bar sections; falls back to [`Self::commands`] when empty.
+    fn menu_sections(&self, _state: &A::State) -> Vec<MenuSection<A::Event>> {
+        Vec::new()
+    }
+
+    /// Maps application lifecycle changes into optional portable events.
     fn lifecycle_event(&mut self, _lifecycle: Lifecycle) -> Option<A::Event> {
+        None
+    }
+
+    /// Maps window-level lifecycle notifications into optional portable events.
+    fn window_lifecycle_event(&mut self, _event: WindowLifecycle) -> Option<A::Event> {
         None
     }
 
@@ -248,102 +110,195 @@ trait RuntimeDriver {
     fn lifecycle(&mut self, lifecycle: Lifecycle);
     fn command(&mut self, index: usize);
     fn event(&mut self, event: Box<dyn Any>);
+    fn drain_async(&mut self);
 }
 
 type DriverRef = Rc<RefCell<Box<dyn RuntimeDriver>>>;
 type WeakDriverRef = Weak<RefCell<Box<dyn RuntimeDriver>>>;
 
+struct DriverWindowSink<E> {
+    driver: WeakDriverRef,
+    _marker: std::marker::PhantomData<E>,
+}
+
+impl<E: 'static> WindowEventSink for DriverWindowSink<E> {
+    fn on_window_lifecycle(&mut self, event: WindowLifecycle) {
+        if let Some(driver) = self.driver.upgrade()
+            && let Ok(mut guard) = driver.try_borrow_mut()
+        {
+            guard.event(Box::new(InternalMsg::<E>::Window(event)));
+        }
+    }
+}
+
+enum InternalMsg<E> {
+    App(E),
+    Window(WindowLifecycle),
+}
+
 struct Driver<A: Application, H: MacosHost<A>> {
     store: Store<A>,
     host: H,
     owner: WeakDriverRef,
-    window: Option<Retained<NSWindow>>,
+    windows: Rc<RefCell<WindowRegistry>>,
+    open_ids: Vec<WindowId>,
     sender: MacosEventSender<A::Event>,
+    proxy: AppEventProxy<A::Event>,
+    async_queue: std::sync::Arc<MacosEventQueue<A::Event>>,
     pending_events: Rc<RefCell<Vec<Box<dyn Any>>>>,
-    commands: Vec<MacosCommand<A::Event>>,
+    command_events: Vec<A::Event>,
     router: Option<Retained<CommandRouter>>,
+    active_menu: Option<Retained<NSMenu>>,
+}
+
+struct DriverWindowController<A: Application, H: MacosHost<A>> {
+    driver: WeakDriverRef,
+    main_thread: MainThreadMarker,
+    _marker: std::marker::PhantomData<(A, H)>,
+    registry: Rc<RefCell<WindowRegistry>>,
+    sender: MacosEventSender<A::Event>,
+    proxy: AppEventProxy<A::Event>,
+    host_ptr: *mut H,
+    open_ids: *mut Vec<WindowId>,
+}
+
+impl<A: Application + 'static, H: MacosHost<A>> WindowController for DriverWindowController<A, H> {
+    fn open_window(&mut self, descriptor: &WindowDescriptor) -> Result<(), FerroError> {
+        if self.registry.borrow().get(&descriptor.id).is_some() {
+            self.registry.borrow().focus(&descriptor.id);
+            return Ok(());
+        }
+        let sink: Rc<RefCell<Box<dyn WindowEventSink>>> =
+            Rc::new(RefCell::new(Box::new(DriverWindowSink::<A::Event> {
+                driver: self.driver.clone(),
+                _marker: std::marker::PhantomData,
+            })));
+        self.registry
+            .borrow_mut()
+            .insert(self.main_thread, descriptor, sink);
+        // SAFETY: `DriverWindowController` is only created inside `Driver::dispatch` and does not
+        // outlive that scope. `host_ptr` and `open_ids` point into the exclusively borrowed `Driver`.
+        unsafe {
+            let registry = self.registry.borrow();
+            let Some(ns_window) = registry.get(&descriptor.id) else {
+                return Err(FerroError::new(
+                    FerroErrorKind::Runtime,
+                    "created window missing from registry",
+                ));
+            };
+            (*self.open_ids).push(descriptor.id.clone());
+            (*self.host_ptr).build_window(
+                &descriptor.id,
+                ns_window,
+                self.main_thread,
+                self.sender.clone(),
+                self.proxy.clone(),
+            );
+        }
+        Ok(())
+    }
+
+    fn close_window(&mut self, id: &WindowId) {
+        self.registry.borrow_mut().remove(id);
+        // SAFETY: Same scope invariant as `open_window`.
+        unsafe {
+            (*self.open_ids).retain(|item| item != id);
+        }
+    }
+
+    fn focus_window(&mut self, id: &WindowId) {
+        self.registry.borrow().focus(id);
+    }
+
+    fn set_always_on_top(&mut self, id: &WindowId, always_on_top: bool) {
+        self.registry.borrow().set_always_on_top(id, always_on_top);
+    }
+
+    fn set_title(&mut self, id: &WindowId, title: &str) {
+        self.registry.borrow().set_title(id, title);
+    }
 }
 
 impl<A: Application + 'static, H: MacosHost<A>> Driver<A, H>
 where
-    A::Event: Clone + 'static,
+    A::Event: Clone + Send + Sync + 'static,
 {
     fn dispatch(&mut self, event: A::Event) {
         let effects = self.store.dispatch(event);
-        self.host.render(self.store.state());
+        self.render_all_windows();
         self.refresh_commands();
         let main_thread =
             MainThreadMarker::new().expect("Ferro events run on the macOS main thread");
+
         for effect in effects {
+            let controller = Rc::new(RefCell::new(DriverWindowController::<A, H> {
+                driver: self.owner.clone(),
+                main_thread,
+                _marker: std::marker::PhantomData,
+                registry: Rc::clone(&self.windows),
+                sender: self.sender.clone(),
+                proxy: self.proxy.clone(),
+                host_ptr: &raw mut self.host,
+                open_ids: &raw mut self.open_ids,
+            }));
             self.host.handle_effect(
                 effect,
                 MacosCapabilities {
                     main_thread,
                     sender: self.sender.clone(),
+                    windows: controller,
                 },
             );
         }
+        self.render_all_windows();
         self.flush_pending_events();
     }
 
+    fn render_all_windows(&mut self) {
+        let state = self.store.state();
+        for id in &self.open_ids {
+            self.host.render_window(id, state);
+        }
+    }
+
     fn flush_pending_events(&mut self) {
-        let events = std::mem::take(&mut *self.pending_events.borrow_mut());
-        for event in events {
-            self.event(event);
+        loop {
+            let queued = std::mem::take(&mut *self.pending_events.borrow_mut());
+            let async_events = self.async_queue.drain();
+            if queued.is_empty() && async_events.is_empty() {
+                break;
+            }
+            for item in queued {
+                self.event(item);
+            }
+            for item in async_events {
+                self.dispatch(item);
+            }
         }
     }
 
     fn refresh_commands(&mut self) {
-        self.commands = self.host.commands(self.store.state());
-        let (Some(window), Some(router)) = (&self.window, &self.router) else {
+        let Some(router) = &self.router else {
             return;
         };
         let main_thread =
             MainThreadMarker::new().expect("Ferro menus run on the macOS main thread");
-        let menu = NSMenu::initWithTitle(NSMenu::alloc(main_thread), &NSString::from_str("File"));
-        for (index, command) in self.commands.iter().enumerate() {
-            let title = NSString::from_str(&command.title);
-            let key = NSString::from_str(
-                &command
-                    .shortcut
-                    .map_or_else(String::new, |key| key.to_string()),
-            );
-            // SAFETY: The selector exists on CommandRouter and the router is retained by Driver.
-            let item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(main_thread),
-                    &title,
-                    Some(sel!(performCommand:)),
-                    &key,
-                )
-            };
-            let Ok(index) = NSInteger::try_from(index) else {
-                continue;
-            };
-            item.setTag(index);
-            item.setEnabled(command.enabled);
-            if command.shortcut.is_some() {
-                item.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
-            }
-            // SAFETY: Driver retains CommandRouter until AppKit terminates.
-            unsafe { item.setTarget(Some(&**router)) };
-            menu.addItem(&item);
-        }
-        // SAFETY: A submenu-only item does not need an action selector.
-        let item = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(main_thread),
-                &NSString::from_str("File"),
-                None,
-                &NSString::from_str(""),
-            )
+        let sections = self.host.menu_sections(self.store.state());
+        let legacy = if sections.is_empty() {
+            self.host.commands(self.store.state())
+        } else {
+            Vec::new()
         };
-        item.setSubmenu(Some(&menu));
-        let main_menu =
-            NSMenu::initWithTitle(NSMenu::alloc(main_thread), &NSString::from_str("Main"));
-        main_menu.addItem(&item);
-        NSApplication::sharedApplication(main_thread).setMainMenu(Some(&main_menu));
-        window.makeKeyAndOrderFront(None);
+        let (menu, events) = build_menu_bar(
+            main_thread,
+            A::descriptor().name(),
+            &sections,
+            &legacy,
+            router,
+        );
+        self.command_events = events;
+        NSApplication::sharedApplication(main_thread).setMainMenu(Some(&menu));
+        self.active_menu = Some(menu);
     }
 
     fn dispatch_lifecycle(&mut self, lifecycle: Lifecycle) {
@@ -355,16 +310,31 @@ where
 
 impl<A: Application + 'static, H: MacosHost<A>> RuntimeDriver for Driver<A, H>
 where
-    A::Event: Clone + 'static,
+    A::Event: Clone + Send + Sync + 'static,
 {
     fn launched(&mut self, main_thread: MainThreadMarker) {
-        let window = create_window(main_thread, A::descriptor().name());
-        self.host.build(&window, main_thread, self.sender.clone());
-        self.window = Some(window);
+        let descriptor = self.host.main_window_descriptor();
+        let sink: Rc<RefCell<Box<dyn WindowEventSink>>> =
+            Rc::new(RefCell::new(Box::new(DriverWindowSink::<A::Event> {
+                driver: self.owner.clone(),
+                _marker: std::marker::PhantomData,
+            })));
+        {
+            let mut registry = self.windows.borrow_mut();
+            let window = registry.insert(main_thread, &descriptor, sink);
+            self.host.build_window(
+                &descriptor.id,
+                window,
+                main_thread,
+                self.sender.clone(),
+                self.proxy.clone(),
+            );
+        }
+        self.open_ids.push(descriptor.id);
         let owner = self.owner.upgrade().expect("runtime driver remains alive");
         self.router = Some(CommandRouter::new(main_thread, owner));
         self.dispatch_lifecycle(Lifecycle::Launched);
-        self.host.render(self.store.state());
+        self.render_all_windows();
         self.refresh_commands();
         let application = NSApplication::sharedApplication(main_thread);
         application.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -373,21 +343,38 @@ where
     }
 
     fn lifecycle(&mut self, lifecycle: Lifecycle) {
+        if lifecycle == Lifecycle::Terminating {
+            self.async_queue.shutdown();
+            clear_main_flusher();
+        }
         self.dispatch_lifecycle(lifecycle);
     }
 
     fn command(&mut self, index: usize) {
-        if let Some(command) = self.commands.get(index)
-            && command.enabled
-        {
-            self.dispatch(command.event.clone());
+        if let Some(event) = self.command_events.get(index).cloned() {
+            self.dispatch(event);
         }
     }
 
     fn event(&mut self, event: Box<dyn Any>) {
-        if let Ok(event) = event.downcast::<A::Event>() {
-            self.dispatch(*event);
+        if let Ok(internal) = event.downcast::<InternalMsg<A::Event>>() {
+            match *internal {
+                InternalMsg::App(app_event) => self.dispatch(app_event),
+                InternalMsg::Window(win_event) => {
+                    if let WindowLifecycle::Closed(ref id) = win_event {
+                        self.windows.borrow_mut().forget(id);
+                        self.open_ids.retain(|item| item != id);
+                    }
+                    if let Some(mapped) = self.host.window_lifecycle_event(win_event) {
+                        self.dispatch(mapped);
+                    }
+                }
+            }
         }
+    }
+
+    fn drain_async(&mut self) {
+        self.flush_pending_events();
     }
 }
 
@@ -481,74 +468,56 @@ impl CommandRouter {
 pub fn run<A, H>(host: H)
 where
     A: Application + 'static,
-    A::Event: Clone + 'static,
+    A::Event: Clone + Send + Sync + 'static,
     H: MacosHost<A>,
 {
     let main_thread =
         MainThreadMarker::new().expect("a Ferro macOS application must start on the main thread");
     let pending_events = Rc::new(RefCell::new(Vec::<Box<dyn Any>>::new()));
+    let async_queue = MacosEventQueue::new();
+    let proxy = create_event_proxy(&async_queue);
+
     let driver: DriverRef = Rc::new_cyclic(|owner: &WeakDriverRef| {
-        let pending_events = Rc::clone(&pending_events);
-        let sender = MacosEventSender({
-            let pending_events = Rc::clone(&pending_events);
-            Rc::new(move |event| {
-                pending_events.borrow_mut().push(Box::new(event));
-            })
-        });
+        let pending_events_for_sender = Rc::clone(&pending_events);
+        let owner_for_sender = owner.clone();
+        let sender = MacosEventSender(Rc::new(move |event| {
+            if let Some(driver) = owner_for_sender.upgrade()
+                && let Ok(mut guard) = driver.try_borrow_mut()
+            {
+                guard.event(Box::new(InternalMsg::App(event)));
+                return;
+            }
+            pending_events_for_sender
+                .borrow_mut()
+                .push(Box::new(InternalMsg::App(event)));
+        }));
         RefCell::new(Box::new(Driver::<A, H> {
             store: Store::new(),
             host,
             owner: owner.clone(),
-            window: None,
+            windows: Rc::new(RefCell::new(WindowRegistry::new())),
+            open_ids: Vec::new(),
             sender,
+            proxy,
+            async_queue: std::sync::Arc::clone(&async_queue),
             pending_events,
-            commands: Vec::new(),
+            command_events: Vec::new(),
             router: None,
+            active_menu: None,
         }))
     });
+
+    let driver_for_async = Rc::downgrade(&driver);
+    register_main_flusher(move || {
+        if let Some(driver) = driver_for_async.upgrade()
+            && let Ok(mut guard) = driver.try_borrow_mut()
+        {
+            guard.drain_async();
+        }
+    });
+
     let app = NSApplication::sharedApplication(main_thread);
     let delegate = Delegate::new(main_thread, Rc::clone(&driver));
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.run();
-}
-
-fn create_window(main_thread: MainThreadMarker, title: &str) -> Retained<NSWindow> {
-    let style = NSWindowStyleMask::Titled
-        | NSWindowStyleMask::Closable
-        | NSWindowStyleMask::Miniaturizable
-        | NSWindowStyleMask::Resizable;
-    // SAFETY: Construction occurs on AppKit's main thread using valid value arguments.
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(main_thread),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 520.0)),
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
-    window.setTitle(&NSString::from_str(title));
-    window.center();
-    window
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CommandId, FileDialogResult, MacosCommand, OpenPanelMode};
-
-    #[test]
-    fn commands_keep_identity_shortcuts_and_availability() {
-        let command = MacosCommand::new(CommandId::new("open"), "Open…", 1)
-            .shortcut('o')
-            .enabled(false);
-        assert_eq!(command.id, CommandId::new("open"));
-        assert_eq!(command.shortcut, Some('o'));
-        assert!(!command.enabled);
-    }
-
-    #[test]
-    fn cancellation_has_no_selected_path() {
-        assert_eq!(FileDialogResult::Cancelled, FileDialogResult::Cancelled);
-        assert_eq!(OpenPanelMode::Folder, OpenPanelMode::Folder);
-    }
 }

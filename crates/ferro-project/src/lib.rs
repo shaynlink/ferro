@@ -28,12 +28,19 @@ pub struct ProjectManifest {
 /// macOS-specific project configuration.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MacosConfiguration {
+    package: Option<String>,
     signing_identity: Option<String>,
     icon: Option<PathBuf>,
     resources_dir: Option<PathBuf>,
 }
 
 impl MacosConfiguration {
+    /// Returns the optional Cargo package name overriding `<slug>-macos`.
+    #[must_use]
+    pub fn package(&self) -> Option<&str> {
+        self.package.as_deref()
+    }
+
     /// Returns the optional code-signing identity used for local macOS bundles.
     #[must_use]
     pub fn signing_identity(&self) -> Option<&str> {
@@ -77,6 +84,17 @@ impl ProjectManifest {
             version: Some("0.1.0".to_owned()),
             build_number: Some(1),
         })
+    }
+
+    /// Sets the optional Cargo package name used for the macOS host binary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectError`] when the package name is empty or contains whitespace.
+    pub fn with_macos_package(mut self, package: Option<String>) -> Result<Self, ProjectError> {
+        validate_package_name(package.as_deref())?;
+        self.macos.package = package;
+        Ok(self)
     }
 
     /// Sets the optional macOS code-signing identity.
@@ -145,6 +163,7 @@ impl ProjectManifest {
             })
             .collect::<Result<_, _>>()?;
         let macos = raw.macos.unwrap_or_default();
+        validate_package_name(macos.package.as_deref())?;
         validate_signing_identity(macos.signing_identity.as_deref())?;
         if raw.schema == 1 {
             return Ok(Self {
@@ -152,6 +171,7 @@ impl ProjectManifest {
                 application: ApplicationDescriptor::new(raw.app.name, raw.app.id),
                 targets,
                 macos: MacosConfiguration {
+                    package: macos.package,
                     signing_identity: macos.signing_identity,
                     icon: None,
                     resources_dir: None,
@@ -174,6 +194,7 @@ impl ProjectManifest {
             ));
         }
         Self::new(raw.app.name, raw.app.id, targets)?
+            .with_macos_package(macos.package)?
             .with_macos_signing_identity(macos.signing_identity)?
             .with_macos_assets(
                 macos.icon.map(PathBuf::from),
@@ -244,21 +265,33 @@ impl ProjectManifest {
             manifest.push_str(&build_number.to_string());
             manifest.push('\n');
         }
+        let mut has_macos_section = false;
+        if let Some(package) = self.macos.package() {
+            manifest.push_str("\n[macos]\npackage = \"");
+            manifest.push_str(package);
+            manifest.push_str("\"\n");
+            has_macos_section = true;
+        }
         if let Some(identity) = self.macos.signing_identity() {
-            manifest.push_str("\n[macos]\nsigning_identity = \"");
+            if !has_macos_section {
+                manifest.push_str("\n[macos]\n");
+                has_macos_section = true;
+            }
+            manifest.push_str("signing_identity = \"");
             manifest.push_str(identity);
             manifest.push_str("\"\n");
         }
         if let Some(icon) = self.macos.icon() {
-            if !manifest.ends_with("\n[macos]\n") && self.macos.signing_identity().is_none() {
+            if !has_macos_section {
                 manifest.push_str("\n[macos]\n");
+                has_macos_section = true;
             }
             manifest.push_str("icon = \"");
             manifest.push_str(&icon.display().to_string());
             manifest.push_str("\"\n");
         }
         if let Some(resources_dir) = self.macos.resources_dir() {
-            if self.macos.signing_identity().is_none() && self.macos.icon().is_none() {
+            if !has_macos_section {
                 manifest.push_str("\n[macos]\n");
             }
             manifest.push_str("resources_dir = \"");
@@ -291,6 +324,7 @@ struct RawApplication {
 #[serde(deny_unknown_fields)]
 #[derive(Default)]
 struct RawMacos {
+    package: Option<String>,
     signing_identity: Option<String>,
     icon: Option<String>,
     resources_dir: Option<String>,
@@ -383,6 +417,23 @@ fn validate_relative_asset_path(path: Option<&Path>, label: &str) -> Result<(), 
         )));
     }
     Ok(())
+}
+
+fn validate_package_name(package: Option<&str>) -> Result<(), ProjectError> {
+    let Some(package) = package else {
+        return Ok(());
+    };
+    let valid = !package.is_empty()
+        && package.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(ProjectError::Invalid(
+            "macOS package must be a non-empty Cargo package identifier".to_owned(),
+        ))
+    }
 }
 
 fn validate_signing_identity(identity: Option<&str>) -> Result<(), ProjectError> {

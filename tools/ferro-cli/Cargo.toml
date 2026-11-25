@@ -17,6 +17,7 @@ ferro-contracts = { path = "../../crates/ferro-contracts" }
 ferro-project = { path = "../../crates/ferro-project" }
 ferro-sdk = { path = "../../crates/ferro-sdk" }
 ferro-storage = { path = "../../crates/ferro-storage" }
+serde_json = "1.0.145"
 
 [dev-dependencies]
 tempfile = "3.27.0"
