@@ -7,6 +7,8 @@ members = [
   "crates/ferro-contracts",
   "crates/ferro-design",
   "crates/ferro-domain",
+  "crates/ferro-project",
+  "crates/ferro-sdk",
   "crates/ferro-state",
   "crates/ferro-storage",
   "crates/ferro-testkit",
@@ -19,6 +21,8 @@ default-members = [
   "crates/ferro-contracts",
   "crates/ferro-design",
   "crates/ferro-domain",
+  "crates/ferro-project",
+  "crates/ferro-sdk",
   "crates/ferro-state",
   "tools/ferro-cli",
 ]

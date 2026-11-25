@@ -33,8 +33,19 @@ The public workflow will be built incrementally:
    requires it.
 5. Package and release each target using its native signing and distribution conventions.
 
-Today, only the diagnostic seed of this workflow exists. The project manifest, app templates,
-target selection, build orchestration, and publishing commands remain to be designed and shipped.
+Today, `ferro init`, `ferro doctor`, and `ferro target list` establish the first part of this
+workflow. `ferro init` writes a strict, versioned `ferro.toml` manifest and creates a Cargo
+workspace containing a shared core plus one scaffold host per declared desktop target. Target
+selection, build orchestration, runtime management, and publishing commands remain to be shipped.
+
+## Project contract
+
+Every Ferro project has a root `ferro.toml` document. Schema version 1 contains an application
+name, a stable reverse-DNS identifier, and an ordered list of desktop targets. Unknown fields and
+unknown targets are rejected so every Ferro tool interprets the project consistently.
+
+`ferro init` defaults to macOS, Windows, and Linux and derives an identifier of the form
+`dev.ferro.<slug>`. Use `--id` before distribution to provide an application-owned identifier.
 
 ## Portability policy
 
