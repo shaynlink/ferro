@@ -37,7 +37,7 @@ impl MacosHost<ProjectNotebook> for NotebookHost {
         content.addSubview(&detail);
         self.status.set(status).expect("host builds once");
         self.detail.set(detail).expect("host builds once");
-        self.sender.set(sender).expect("host builds once");
+        assert!(self.sender.set(sender).is_ok(), "host builds once");
     }
 
     fn render(&mut self, state: &AppState) {
