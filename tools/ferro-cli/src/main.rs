@@ -1348,9 +1348,8 @@ mod tests {
     use ferro_project::ProjectManifest;
 
     use super::{
-        Cli, Command, PackageFormat, assemble_macos_bundle, create_distribution_artifact,
-        init_project, load_macos_project, macos_info_plist, prepare_distribution_bundle,
-        project_slug, safe_bundle_name, watch_fingerprint,
+        Cli, Command, assemble_macos_bundle, init_project, load_macos_project, macos_info_plist,
+        prepare_distribution_bundle, project_slug, safe_bundle_name, watch_fingerprint,
     };
 
     #[test]
@@ -1571,9 +1570,9 @@ mod tests {
         let zip = directory.path().join("Atlas.zip");
         let dmg = directory.path().join("Atlas.dmg");
 
-        create_distribution_artifact(PackageFormat::Zip, &bundle.path, &zip, "Atlas")
+        super::create_distribution_artifact(super::PackageFormat::Zip, &bundle.path, &zip, "Atlas")
             .expect("create zip");
-        create_distribution_artifact(PackageFormat::Dmg, &bundle.path, &dmg, "Atlas")
+        super::create_distribution_artifact(super::PackageFormat::Dmg, &bundle.path, &dmg, "Atlas")
             .expect("create dmg");
 
         assert!(zip.is_file());
