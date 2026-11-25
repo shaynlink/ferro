@@ -7,15 +7,25 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+metal = ["dep:objc2-metal"]
+preview-webview = ["dep:objc2-web-kit", "dep:block2"]
+
 [dependencies]
+block2 = { version = "0.6.2", optional = true }
+dispatch2 = "0.3.1"
 ferro-sdk = { path = "../ferro-sdk" }
 ferro-state = { path = "../ferro-state" }
 objc2 = "0.6.5"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
+objc2-metal = { version = "0.3.2", optional = true }
+objc2-quartz-core = "0.3.2"
+objc2-web-kit = { version = "0.3.2", optional = true }
 
 [lints.rust]
-# AppKit construction crosses an FFI boundary. Keep unsafe isolated to this runtime crate.
+# AppKit and WebKit construction crosses an FFI boundary. Keep unsafe isolated to this runtime crate.
 unsafe_code = "allow"
 missing_docs = "warn"
 

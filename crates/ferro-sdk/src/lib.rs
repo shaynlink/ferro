@@ -3,8 +3,19 @@
 //! This crate deliberately contains no UI runtime or target SDK dependency. It is the stable
 //! vocabulary shared by future Ferro project tooling and target adapters.
 
+mod events;
+mod menu;
+mod window;
+
 use std::fmt;
 use std::str::FromStr;
+
+pub use events::{AppEventProxy, EventSink};
+pub use menu::{
+    KeyModifiers, MenuItem, MenuItemKind, MenuSection, MenuShortcut, ShortcutKey, SpecialKey,
+    StandardEditAction,
+};
+pub use window::{WindowDescriptor, WindowId, WindowLifecycle, WindowStyle};
 
 /// A platform family supported by a Ferro application.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -133,6 +144,8 @@ pub enum Lifecycle {
     Deactivated,
     /// The application is about to terminate.
     Terminating,
+    /// The system appearance (e.g. Light/Dark) changed.
+    AppearanceChanged,
 }
 
 /// Public category for a failure reported by Ferro services or runtimes.
@@ -182,7 +195,11 @@ impl std::error::Error for FerroError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Application, ApplicationDescriptor, FerroError, FerroErrorKind, Target};
+    use super::{
+        AppEventProxy, Application, ApplicationDescriptor, FerroError, FerroErrorKind,
+        KeyModifiers, MenuItem, MenuSection, MenuShortcut, SpecialKey, StandardEditAction, Target,
+        WindowDescriptor, WindowId, WindowStyle,
+    };
 
     struct Atlas;
 
@@ -238,5 +255,52 @@ mod tests {
         let error = FerroError::new(FerroErrorKind::Persistence, "database unavailable");
         assert_eq!(error.kind(), FerroErrorKind::Persistence);
         assert!(error.to_string().contains("database unavailable"));
+    }
+
+    #[test]
+    fn window_descriptors_capture_style_and_constraints() {
+        let desc = WindowDescriptor::new(WindowId::main(), "Worklens")
+            .size(1440.0, 960.0)
+            .min_size(1000.0, 700.0)
+            .always_on_top(true)
+            .style(WindowStyle::Overlay {
+                traffic_light_offset: Some((22.0, 28.0)),
+            });
+        assert!(desc.id.is_main());
+        assert_eq!(desc.min_width, Some(1000.0));
+        assert!(desc.always_on_top);
+    }
+
+    #[test]
+    fn menu_sections_support_shortcuts_and_standard_edit() {
+        let section = MenuSection::new(
+            "Edit",
+            vec![
+                MenuItem::standard_edit(
+                    "Copy",
+                    StandardEditAction::Copy,
+                    Some(MenuShortcut::cmd('c')),
+                ),
+                MenuItem::separator(),
+                MenuItem::command("find", "Search", 42)
+                    .shortcut(MenuShortcut::cmd_special(SpecialKey::Comma))
+                    .enabled(true),
+            ],
+        );
+        assert_eq!(section.items.len(), 3);
+        assert!(KeyModifiers::COMMAND.with_shift().has_shift());
+    }
+
+    #[test]
+    fn memory_event_proxy_records_events_across_threads() {
+        let (proxy, log) = AppEventProxy::memory();
+        let worker_proxy = proxy.clone();
+        std::thread::spawn(move || {
+            worker_proxy.send("bg-event").expect("send event");
+        })
+        .join()
+        .expect("worker thread");
+
+        assert_eq!(*log.lock().expect("lock"), vec!["bg-event"]);
     }
 }

@@ -88,6 +88,9 @@ enum Command {
         /// Developer ID Application signing identity.
         #[arg(long)]
         sign: Option<String>,
+        /// Sign with a local ad-hoc identity (`-`) instead of a Developer ID certificate.
+        #[arg(long, conflicts_with = "notarize")]
+        ad_hoc: bool,
         /// Submit the artifact to Apple's notary service and staple its ticket.
         #[arg(long)]
         notarize: bool,
@@ -153,6 +156,7 @@ fn main() {
             format,
             output,
             sign,
+            ad_hoc,
             notarize,
             notary_profile,
         } => package_project(
@@ -163,6 +167,7 @@ fn main() {
                 format,
                 output,
                 signing_identity: sign,
+                ad_hoc,
                 notarize,
                 notary_profile,
             },
@@ -309,11 +314,16 @@ fn doctor(project: &Path) -> Result<(), String> {
             }
             if manifest.targets().contains(&Target::Macos) {
                 let slug = project_slug(project)?;
-                let host = project.join("apps").join(format!("{slug}-macos"));
-                if host.join("Cargo.toml").is_file() && host.join("src/main.rs").is_file() {
+                if let Some(host) = resolve_macos_host_dir(project, &slug) {
                     println!("- macOS host: ready ({})", host.display());
                 } else {
-                    let message = format!("generated macOS host is missing at {}", host.display());
+                    let expected = project.join("apps").join(format!("{slug}-macos"));
+                    let message = format!(
+                        "macOS host is missing (checked {}, {}, and {})",
+                        expected.display(),
+                        project.join("macos").display(),
+                        project.display()
+                    );
                     println!("- macOS host: invalid ({message})");
                     failures.push(message);
                 }
@@ -405,6 +415,7 @@ struct PackageOptions {
     format: PackageFormat,
     output: Option<PathBuf>,
     signing_identity: Option<String>,
+    ad_hoc: bool,
     notarize: bool,
     notary_profile: Option<String>,
 }
@@ -421,7 +432,10 @@ fn build_project(
     options: BuildOptions,
 ) -> Result<BuiltBundle, String> {
     let (manifest, slug) = load_macos_project(project, target)?;
-    let package = format!("{slug}-{target}");
+    let package = manifest
+        .macos()
+        .package()
+        .map_or_else(|| format!("{slug}-{target}"), str::to_owned);
     let mut command = ProcessCommand::new("cargo");
     command.args(["build", "--package", &package]);
     if let Some(target_triple) = options.target_triple {
@@ -442,9 +456,10 @@ fn build_project(
     }
 
     let profile = if options.release { "release" } else { "debug" };
+    let target_root = cargo_target_directory(project);
     let executable_directory = options.target_triple.map_or_else(
-        || project.join("target").join(profile),
-        |target_triple| project.join("target").join(target_triple).join(profile),
+        || target_root.join(profile),
+        |target_triple| target_root.join(target_triple).join(profile),
     );
     let executable = executable_directory.join(&package);
     if !executable.is_file() {
@@ -453,13 +468,9 @@ fn build_project(
             executable.display()
         ));
     }
-    let output = options.output.unwrap_or_else(|| {
-        project
-            .join("target")
-            .join("ferro")
-            .join("macos")
-            .join(profile)
-    });
+    let output = options
+        .output
+        .unwrap_or_else(|| target_root.join("ferro").join("macos").join(profile));
     assemble_macos_bundle(
         &output,
         manifest.application().name(),
@@ -502,14 +513,19 @@ fn package_project(
             resources.display()
         ));
     }
-    let signing_identity = options
-        .signing_identity
-        .as_deref()
-        .or(manifest.macos().signing_identity())
-        .ok_or_else(|| "ferro package requires a Developer ID Application identity via --sign or macos.signing_identity".to_owned())?;
-    if !signing_identity.starts_with("Developer ID Application:") {
-        return Err("ferro package requires a Developer ID Application identity".to_owned());
-    }
+    let signing_identity = if options.ad_hoc {
+        "-"
+    } else {
+        let identity = options
+            .signing_identity
+            .as_deref()
+            .or(manifest.macos().signing_identity())
+            .ok_or_else(|| "ferro package requires a Developer ID Application identity via --sign or macos.signing_identity (or pass --ad-hoc)".to_owned())?;
+        if !identity.starts_with("Developer ID Application:") {
+            return Err("ferro package requires a Developer ID Application identity".to_owned());
+        }
+        identity
+    };
     if options.notarize && options.notary_profile.is_none() {
         return Err("--notarize requires --notary-profile <keychain-profile>".to_owned());
     }
@@ -529,7 +545,11 @@ fn package_project(
         },
     )?;
     prepare_distribution_bundle(&bundle, &icon, &resources, version, build_number)?;
-    sign_distribution_bundle(&bundle.path, signing_identity)?;
+    if options.ad_hoc {
+        sign_bundle(&bundle.path, "-")?;
+    } else {
+        sign_distribution_bundle(&bundle.path, signing_identity)?;
+    }
     verify_apple_silicon(&bundle.executable)?;
 
     fs::create_dir_all(&output).map_err(|error| {
@@ -876,14 +896,41 @@ fn load_macos_project(project: &Path, target: Target) -> Result<(ProjectManifest
     }
 
     let slug = project_slug(project)?;
-    let host = project.join("apps").join(format!("{slug}-macos"));
-    if !host.join("Cargo.toml").is_file() || !host.join("src/main.rs").is_file() {
+    if resolve_macos_host_dir(project, &slug).is_none() {
+        let expected = project.join("apps").join(format!("{slug}-macos"));
         return Err(format!(
             "generated macOS host is missing at {}",
-            host.display()
+            expected.display()
         ));
     }
     Ok((manifest, slug))
+}
+
+fn resolve_macos_host_dir(project: &Path, slug: &str) -> Option<PathBuf> {
+    let candidates = [
+        project.join("apps").join(format!("{slug}-macos")),
+        project.join("macos"),
+        project.to_path_buf(),
+    ];
+    candidates
+        .into_iter()
+        .find(|dir| dir.join("Cargo.toml").is_file() && dir.join("src/main.rs").is_file())
+}
+
+fn cargo_target_directory(project: &Path) -> PathBuf {
+    if let Ok(output) = ProcessCommand::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(project)
+        .output()
+        && output.status.success()
+        && let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        && let Some(dir) = meta
+            .get("target_directory")
+            .and_then(serde_json::Value::as_str)
+    {
+        return PathBuf::from(dir);
+    }
+    project.join("target")
 }
 
 fn develop_project(project: &Path, target: Target) -> Result<(), String> {
@@ -1026,7 +1073,7 @@ fn sign_bundle(bundle: &Path, identity: &str) -> Result<(), String> {
 
 fn macos_info_plist(application_name: &str, application_id: &str, executable_name: &str) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>CFBundleDisplayName</key>\n  <string>{}</string>\n  <key>CFBundleExecutable</key>\n  <string>{}</string>\n  <key>CFBundleIdentifier</key>\n  <string>{}</string>\n  <key>CFBundleInfoDictionaryVersion</key>\n  <string>6.0</string>\n  <key>CFBundleName</key>\n  <string>{}</string>\n  <key>CFBundlePackageType</key>\n  <string>APPL</string>\n  <key>CFBundleShortVersionString</key>\n  <string>0.1.0</string>\n  <key>CFBundleVersion</key>\n  <string>1</string>\n</dict>\n</plist>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>CFBundleDisplayName</key>\n  <string>{}</string>\n  <key>CFBundleExecutable</key>\n  <string>{}</string>\n  <key>CFBundleIdentifier</key>\n  <string>{}</string>\n  <key>CFBundleInfoDictionaryVersion</key>\n  <string>6.0</string>\n  <key>CFBundleName</key>\n  <string>{}</string>\n  <key>CFBundlePackageType</key>\n  <string>APPL</string>\n  <key>CFBundleShortVersionString</key>\n  <string>0.1.0</string>\n  <key>CFBundleVersion</key>\n  <string>1</string>\n  <key>NSHighResolutionCapable</key>\n  <true/>\n  <key>NSPrincipalClass</key>\n  <string>NSApplication</string>\n</dict>\n</plist>\n",
         xml_escape(application_name),
         xml_escape(executable_name),
         xml_escape(application_id),
@@ -1083,7 +1130,12 @@ fn collect_watch_entries(
         }
         if file_type.is_dir() {
             let name = entry.file_name();
-            if name == "target" || name == ".git" {
+            if name == "target"
+                || name == ".git"
+                || name == "node_modules"
+                || name == ".nx"
+                || name == "dist"
+            {
                 continue;
             }
             collect_watch_entries(root, &path, entries)?;
@@ -1350,7 +1402,8 @@ mod tests {
 
     use super::{
         Cli, Command, assemble_macos_bundle, init_project, load_macos_project, macos_info_plist,
-        prepare_distribution_bundle, project_slug, safe_bundle_name, watch_fingerprint,
+        prepare_distribution_bundle, project_slug, resolve_macos_host_dir, safe_bundle_name,
+        watch_fingerprint,
     };
 
     #[test]
@@ -1619,5 +1672,41 @@ mod tests {
     #[test]
     fn normalizes_unsafe_bundle_names() {
         assert_eq!(safe_bundle_name("Atlas/App"), "Atlas-App");
+    }
+
+    #[test]
+    fn resolves_monorepo_subproject_host_directory() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let subproject = directory.path().join("apps").join("worklens");
+        std::fs::create_dir_all(subproject.join("macos/src")).expect("create macos subproject");
+        std::fs::write(
+            subproject.join("ferro.toml"),
+            "schema = 2\n\n[app]\nname = \"Worklens\"\nid = \"dev.worklens.desktop\"\ntargets = [\"macos\"]\nversion = \"0.1.0\"\nbuild_number = 1\n\n[macos]\npackage = \"worklens-macos\"\n",
+        )
+        .expect("manifest");
+        std::fs::write(
+            subproject.join("macos/Cargo.toml"),
+            "[package]\nname = \"worklens-macos\"\n",
+        )
+        .expect("cargo");
+        std::fs::write(subproject.join("macos/src/main.rs"), "fn main() {}\n").expect("main");
+
+        let host = resolve_macos_host_dir(&subproject, "worklens")
+            .expect("resolve monorepo subproject host");
+        assert_eq!(host, subproject.join("macos"));
+    }
+
+    #[test]
+    fn parses_ad_hoc_package_command() {
+        let cli = Cli::try_parse_from(["ferro", "package", "macos", "--arch", "arm64", "--ad-hoc"])
+            .expect("parse ad-hoc package command");
+        let Command::Package {
+            ad_hoc, notarize, ..
+        } = cli.command
+        else {
+            panic!("expected package command");
+        };
+        assert!(ad_hoc);
+        assert!(!notarize);
     }
 }
