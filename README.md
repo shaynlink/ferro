@@ -1,96 +1,102 @@
 # Ferro
 
-**A native-first Rust desktop architecture for macOS, Windows, and Linux.**
+**A Rust-first framework and toolchain for building native applications across platforms.**
 
-Ferro shares business logic, state, contracts, data models, and tests across desktop targets.
-It deliberately does **not** share a lowest-common-denominator widget tree: each platform owns
-its native UI, lifecycle, accessibility, windowing, and packaging.
+Ferro is a developer platform: application teams use a CLI, shared Rust packages, and target
+adapters to build and ship their own products. In that sense it is comparable to Expo or React
+Native. Ferro is not itself the end-user desktop application described by its early prototype code.
 
-## Philosophy
+Desktop is the first delivery surface (macOS, Windows, and Linux). iOS and Android follow once the
+desktop foundation is stable; watchOS, tvOS, automotive, and other surfaces are later targets.
 
-- **Rust owns the product.** Domain rules, use cases, persistence contracts, and application state
-  live in shared Rust crates.
-- **The operating system owns the interface.** AppKit, WinUI, and GTK render the application using
-  their own controls and conventions.
-- **Platform boundaries are explicit.** A platform adapter implements a shared contract; no UI crate
-  may depend on another UI crate.
-- **The terminal is first-class.** The `ferro` CLI will provide local diagnostics, builds, packaging,
-  and release checks without hiding the underlying native SDKs.
+## Product direction
 
-## Workspace layout
+Ferro provides a common foundation for an application's product logic, development workflow, and
+platform integration:
+
+- **CLI and tooling** for creating, diagnosing, building, running, packaging, and eventually
+  publishing application projects.
+- **Shared Rust SDK packages** for domain logic, state, contracts, testing, and platform-neutral
+  capabilities.
+- **Target adapters** that connect an application to each platform's native lifecycle, UI,
+  permissions, packaging, and distribution rules.
+- **Native output**, not a browser shell or a lowest-common-denominator desktop app.
+
+Ferro takes inspiration from Expo and React Native as a developer experience, not as a commitment
+to JavaScript, a webview, or a universal widget hierarchy. The framework will share what is
+meaningfully portable and preserve each target's native requirements.
+
+Read [the framework guide](docs/framework.md) for the intended developer model and
+[the architecture guide](docs/architecture.md) for package and target boundaries.
+
+## Repository status
+
+This repository is an early bootstrap, not a general-purpose SDK release. It currently contains:
+
+- a Rust workspace and cross-OS quality-gate matrix;
+- an embryonic `ferro` developer CLI (`doctor` and storage diagnostics);
+- shared crates that prove the intended package boundaries;
+- macOS, Windows, and Linux host placeholders, with a small AppKit reference host on macOS;
+- an internal LiliaDB-backed storage experiment.
+
+The AppKit screen and workspace catalogue are reference/prototyping code. They do not define
+Ferro's product model or public API.
+
+## Current workspace
 
 ```text
 apps/
-  ferro-macos/       Native AppKit host
-  ferro-windows/     Reserved Windows native host
-  ferro-linux/       Reserved GTK4 native host
+  ferro-macos/       macOS reference host
+  ferro-windows/     Windows target placeholder
+  ferro-linux/       Linux target placeholder
 crates/
-  ferro-domain/      Business types and invariants
-  ferro-application/ Platform-neutral use cases
-  ferro-contracts/   Ports implemented by system adapters
-  ferro-state/       Presentation state and user intents
-  ferro-storage/     Embedded LiliaDB adapters and workspace storage
-  ferro-design/      Semantic design tokens, never widgets
-  ferro-testkit/     In-memory adapters and test helpers
+  ferro-domain/      shared types and invariants prototype
+  ferro-application/ shared use-case prototype
+  ferro-contracts/   target-service boundaries
+  ferro-state/       shared state primitives
+  ferro-design/      semantic design intent, never a widget kit
+  ferro-storage/     internal persistence experiment
+  ferro-testkit/     reusable test doubles and fixtures
 tools/
-  ferro-cli/         Developer CLI
-  xtask/             Repository automation
+  ferro-cli/         developer-facing command foundation
+  xtask/             repository automation
 docs/
-  architecture.md    Boundaries, dependency rules, and platform policy
+  framework.md       developer-platform model and roadmap
+  architecture.md    package and target boundaries
+  storage.md         status of the internal storage experiment
 ```
-
-See [the architecture guide](docs/architecture.md) for the dependency graph and the platform
-implementation strategy.
-
-## Status
-
-Ferro is in bootstrap. The Rust workspace, quality gates, CI matrix, CLI foundation, and native
-AppKit workspace-list screen exist. LiliaDB v0.2 is the only persistent backend: a compact global
-catalogue stores recently opened workspaces, while each workspace can own a multimodel local base.
-SQLite is intentionally not supported or migrated.
-
-## Prerequisites
-
-- Rust 1.100 or newer
-- macOS development: a current Xcode installation and command-line tools
-- Windows and Linux development will require their respective native SDKs when their hosts land
 
 ## Development
 
-```sh
-# Run all unit and documentation tests.
-cargo test --workspace
+Ferro currently requires Rust 1.100 or newer. Developing the reference macOS host also requires
+Xcode and its command-line tools.
 
-# Enforce formatting and lints.
+```sh
+# Run the shared checks.
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
-# Inspect the current machine.
+# Inspect the local development environment.
 cargo run -p ferro -- doctor
 
-# Launch the macOS AppKit host.
+# Launch the macOS reference host (not a Ferro application template).
 cargo run -p ferro-macos
-
-# Verify a workspace-local LiliaDB database.
-cargo run -p ferro -- storage /path/to/workspace/.ferro/ferro.lilia
 ```
 
-## Non-goals
-
-- A webview-based desktop shell
-- A custom GPU rendering engine
-- A universal `Button`, `List`, or navigation abstraction masking OS behavior
-- Claiming that Xcode, Windows tooling, or Linux packaging can be eliminated
+The current CLI is intentionally small. Commands such as project creation, target selection,
+development runtime management, signing, packaging, and publishing are roadmap work, not
+implemented promises.
 
 ## Roadmap
 
-1. Add native file selection, workspace opening and workspace-local storage provisioning.
-2. Index workspace content locally with LiliaDB JSON, full-text and graph models.
-3. Add opt-in semantic indexing through a separately verified local model component.
-4. Validate GTK4/Linux and Windows native hosts through dedicated spikes.
-5. Package, test, and release a desktop beta on all three operating systems.
+1. Define Ferro's public project model, manifest, SDK surface, and CLI workflow for desktop apps.
+2. Turn the desktop target adapters into supported development and build targets.
+3. Establish a mobile target abstraction and validate iOS and Android with focused native spikes.
+4. Add repeatable packaging, signing, and release workflows per target.
+5. Extend to additional device surfaces only after the core project and target model is stable.
 
 ## License
 
-The intended license is MIT OR Apache-2.0. The license texts will be added before the first public
+The intended license is MIT OR Apache-2.0. License texts will be added before the first public
 release.
