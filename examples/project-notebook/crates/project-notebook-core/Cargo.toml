@@ -1,0 +1,13 @@
+[package]
+name = "project-notebook-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ferro-contracts = { path = "../../../../crates/ferro-contracts" }
+ferro-sdk = { path = "../../../../crates/ferro-sdk" }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[lints]
+workspace = true

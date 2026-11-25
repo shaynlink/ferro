@@ -1,0 +1,11 @@
+schema = 2
+
+[app]
+name = "Project Notebook"
+id = "dev.ferro.project-notebook"
+targets = ["macos"]
+version = "0.1.0"
+build_number = 1
+
+[macos]
+package = "project-notebook-macos"
