@@ -1,12 +1,13 @@
 use std::path::Path;
 
 use ferro_contracts::{
-    RecentWorkspaceStore, StoreError, WorkspaceActivityStore, WorkspaceIndex, WorkspaceMaintenance,
-    WorkspaceTopology,
+    Preferences, RecentResource, RecentResources, RecentWorkspaceStore, StoreError,
+    WorkspaceActivityStore, WorkspaceIndex, WorkspaceMaintenance, WorkspaceTopology,
 };
 use ferro_domain::{
     Workspace, WorkspaceActivityPoint, WorkspaceArtifact, WorkspaceRelationship, WorkspaceSearchHit,
 };
+use ferro_sdk::{FerroError, FerroErrorKind};
 use lilia_db::{
     Batch, Database, FtsWrite, GraphWrite, Options, ResourceProfile, TimeSeriesPoint, Write,
 };
@@ -17,6 +18,112 @@ const CATALOG_SPACE: &str = "ferro_catalog_workspaces";
 const ARTIFACT_SPACE: &str = "ferro_workspace_artifacts";
 const ARTIFACT_SEARCH: &str = "ferro_workspace_artifacts";
 const WORKSPACE_GRAPH: &str = "ferro_workspace_dependencies";
+const APPLICATION_PREFERENCES: &str = "ferro_application_preferences";
+const APPLICATION_RECENTS: &str = "ferro_application_recents";
+
+/// Optional application persistence services backed exclusively by `LiliaDB`.
+pub struct LiliaApplicationStorage {
+    database: Database,
+}
+
+impl LiliaApplicationStorage {
+    /// Opens or creates a LiliaDB-backed application storage directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FerroError`] when the database cannot be opened.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, FerroError> {
+        open_database(path)
+            .map(|database| Self { database })
+            .map_err(public_store_error)
+    }
+}
+
+impl Preferences for LiliaApplicationStorage {
+    fn get(&self, key: &str) -> Result<Option<String>, FerroError> {
+        self.database
+            .system()
+            .json_get(APPLICATION_PREFERENCES, key)
+            .map_err(public_lilia_error)
+            .and_then(|entry| {
+                entry
+                    .map(|entry| {
+                        entry
+                            .value()
+                            .get("value")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .ok_or_else(|| {
+                                FerroError::new(
+                                    FerroErrorKind::Persistence,
+                                    "stored preference is not valid UTF-8 text",
+                                )
+                            })
+                    })
+                    .transpose()
+            })
+    }
+
+    fn set(&mut self, key: &str, value: &str) -> Result<(), FerroError> {
+        self.database
+            .system()
+            .json_put(APPLICATION_PREFERENCES, key, &json!({ "value": value }))
+            .map(drop)
+            .map_err(public_lilia_error)
+    }
+
+    fn remove(&mut self, key: &str) -> Result<(), FerroError> {
+        self.database
+            .system()
+            .json_delete(APPLICATION_PREFERENCES, key)
+            .map(drop)
+            .map_err(public_lilia_error)
+    }
+}
+
+impl RecentResources for LiliaApplicationStorage {
+    fn recent(&self) -> Result<Vec<RecentResource>, FerroError> {
+        let mut records = self
+            .database
+            .system()
+            .json_scan(APPLICATION_RECENTS, &lilia_db::Scan::default())
+            .map_err(public_lilia_error)?
+            .into_iter()
+            .map(|entry| {
+                serde_json::from_value::<RecentResourceRecord>(entry.value()).map_err(|error| {
+                    FerroError::new(
+                        FerroErrorKind::Persistence,
+                        format!("could not decode a recent resource: {error}"),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        records.sort_by_key(|record| std::cmp::Reverse(record.last_opened));
+        Ok(records
+            .into_iter()
+            .map(|record| RecentResource::new(record.path))
+            .collect())
+    }
+
+    fn remember(&mut self, resource: RecentResource) -> Result<(), FerroError> {
+        let path = resource.path().display().to_string();
+        let record = RecentResourceRecord {
+            path: path.clone(),
+            last_opened: now_ms(),
+        };
+        let value = serde_json::to_value(record).map_err(|error| {
+            FerroError::new(
+                FerroErrorKind::Persistence,
+                format!("could not encode a recent resource: {error}"),
+            )
+        })?;
+        self.database
+            .system()
+            .json_put(APPLICATION_RECENTS, &path, &value)
+            .map(drop)
+            .map_err(public_lilia_error)
+    }
+}
 
 /// A durable global workspace catalogue backed by `LiliaDB` documents.
 pub struct PersistentRecentWorkspaceStore {
@@ -221,6 +328,12 @@ struct WorkspaceRecord {
     last_opened: u64,
 }
 
+#[derive(Deserialize, Serialize)]
+struct RecentResourceRecord {
+    path: String,
+    last_opened: u64,
+}
+
 impl From<&Workspace> for WorkspaceRecord {
     fn from(workspace: &Workspace) -> Self {
         Self {
@@ -262,6 +375,25 @@ fn storage_error(error: lilia_db::Error) -> StoreError {
 
 #[allow(
     clippy::needless_pass_by_value,
+    reason = "map_err transfers ownership of the backend error at this adapter boundary"
+)]
+fn public_lilia_error(error: lilia_db::Error) -> FerroError {
+    FerroError::new(
+        FerroErrorKind::Persistence,
+        format!("LiliaDB operation failed: {error}"),
+    )
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "map_err transfers ownership of the storage error at this adapter boundary"
+)]
+fn public_store_error(error: StoreError) -> FerroError {
+    FerroError::new(FerroErrorKind::Persistence, error.to_string())
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
     reason = "map_err transfers ownership of the serialization error to this adapter boundary"
 )]
 fn decode_error(error: serde_json::Error) -> StoreError {
@@ -279,14 +411,42 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use ferro_contracts::{
-        RecentWorkspaceStore, WorkspaceActivityStore, WorkspaceIndex, WorkspaceMaintenance,
-        WorkspaceTopology,
+        Preferences, RecentResource, RecentResources, RecentWorkspaceStore, WorkspaceActivityStore,
+        WorkspaceIndex, WorkspaceMaintenance, WorkspaceTopology,
     };
     use ferro_domain::{
         Workspace, WorkspaceActivityPoint, WorkspaceArtifact, WorkspaceRelationship,
     };
 
-    use super::{PersistentRecentWorkspaceStore, WorkspaceDatabase};
+    use super::{LiliaApplicationStorage, PersistentRecentWorkspaceStore, WorkspaceDatabase};
+
+    #[test]
+    fn application_services_persist_preferences_and_recents() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("application.lilia");
+        let mut storage = LiliaApplicationStorage::open(&path).expect("open application storage");
+        storage.set("theme", "night").expect("store preference");
+        storage
+            .remember(RecentResource::new("/workspace/atlas"))
+            .expect("store recent");
+        drop(storage);
+
+        let mut reopened =
+            LiliaApplicationStorage::open(&path).expect("reopen application storage");
+        assert_eq!(
+            reopened.get("theme").expect("read preference"),
+            Some("night".to_owned())
+        );
+        assert_eq!(
+            reopened.recent().expect("read recents"),
+            vec![RecentResource::new("/workspace/atlas")]
+        );
+        reopened.remove("theme").expect("remove preference");
+        assert_eq!(
+            reopened.get("theme").expect("read removed preference"),
+            None
+        );
+    }
 
     #[test]
     fn catalogue_survives_reopen() {

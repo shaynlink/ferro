@@ -42,6 +42,19 @@ events and a pure reducer; its macOS host owns AppKit views, native commands and
 It is a local-development runtime only: the generated project currently points at the checked-out
 Ferro source, and packaging, signing, and publishing remain out of scope.
 
+## Stable developer API
+
+The first public API is intentionally narrow. `ferro-sdk` owns the application structure, reducer,
+lifecycle vocabulary and `FerroError` categories. `ferro-contracts` owns portable Preferences and
+Recent Resources services. Native target crates implement those services and own all UI details.
+
+macOS exposes alerts, confirmations, open-file, open-folder and save panels through its runtime.
+Their outcomes are returned to the application as typed values or events; cancellation is explicit.
+No shared widget API is provided.
+
+Persistence is opt-in and uses LiliaDB exclusively. Applications that do not enable the persistence
+feature do not link a storage backend. SQLite is not a Ferro feature or supported alternative.
+
 ## Project contract
 
 Every Ferro project has a root `ferro.toml` document. Schema version 1 contains an application

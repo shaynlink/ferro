@@ -1,34 +1,29 @@
-# Storage experiment
+# Storage and optional developer services
 
-`ferro-storage` is currently an internal LiliaDB-backed experiment. It validates how an embedded
-data service could be offered to future Ferro applications without making a database implementation
-part of a target UI or of the core domain layer.
+`ferro-storage` embeds LiliaDB and exposes optional developer services without making a database
+implementation part of a target UI or of the core domain layer.
 
-It does **not** define Ferro's product purpose, project model, or public persistence API.
+It does **not** define Ferro's product purpose or project model.
 
 ## Current implementation
 
-The crate currently embeds LiliaDB in Rust and exposes prototype adapters for a global catalogue
-and a workspace-local database. The reference macOS host uses these adapters while the framework
-bootstrap is being developed. The `ferro storage <path>` command can run an integrity check on a
-local database path.
+The public optional surface is Preferences and Recent Resources, backed exclusively by LiliaDB.
+The crate also retains prototype adapters for a global catalogue and workspace-local database. The
+`ferro storage <path>` command can run an integrity check on a local database path.
 
-This is experimental code, not a compatibility promise for Ferro application developers. Its paths,
-schemas, data models, and command shape may change once Ferro has a public project manifest and SDK
-service model.
+The public service contracts are the compatibility boundary. Prototype catalogue and indexing paths,
+schemas and data models remain subject to change.
 
 ## Framework direction
 
-A future persistence capability must be defined as an explicit SDK service with clear ownership,
-lifecycle, migration, backup, and target-support semantics. An application should opt into it;
-Ferro must not impose an end-user workspace catalogue or a particular database model on every app.
+Persistence has clear ownership through explicit SDK services. An application opts into it; Ferro
+does not impose an end-user workspace catalogue or database dependency on every app.
 
-LiliaDB remains a candidate embedded implementation because it can support local documents,
-full-text search, graphs, activity series, integrity checks, and history. Those capabilities become
-part of Ferro only when they support a documented framework workflow and a stable public contract.
+LiliaDB is the sole supported embedded implementation. SQLite is not a Ferro backend, feature or
+migration target. Documents, search, graphs, activity series, integrity checks and history remain
+internal until they support a documented framework workflow and stable public contract.
 
 ## Operational guidance for the prototype
 
 Back up a complete LiliaDB directory only while its owning process is closed. Do not place a live
-database on a network filesystem. There is no automatic import, migration, or removal of legacy
-SQLite files.
+database on a network filesystem.

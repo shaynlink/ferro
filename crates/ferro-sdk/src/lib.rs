@@ -135,9 +135,54 @@ pub enum Lifecycle {
     Terminating,
 }
 
+/// Public category for a failure reported by Ferro services or runtimes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FerroErrorKind {
+    /// A native runtime could not complete an operation.
+    Runtime,
+    /// A shared application service failed.
+    Service,
+    /// A native dialogue could not be presented or completed.
+    Dialog,
+    /// Optional persistence could not complete an operation.
+    Persistence,
+}
+
+/// Stable error returned by Ferro's public developer API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FerroError {
+    kind: FerroErrorKind,
+    message: String,
+}
+
+impl FerroError {
+    /// Creates a categorized diagnostic safe to show in a development UI.
+    #[must_use]
+    pub fn new(kind: FerroErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// Returns the category that produced this error.
+    #[must_use]
+    pub const fn kind(&self) -> FerroErrorKind {
+        self.kind
+    }
+}
+
+impl fmt::Display for FerroError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for FerroError {}
+
 #[cfg(test)]
 mod tests {
-    use super::{Application, ApplicationDescriptor, Target};
+    use super::{Application, ApplicationDescriptor, FerroError, FerroErrorKind, Target};
 
     struct Atlas;
 
@@ -186,5 +231,12 @@ mod tests {
         let mut state = Atlas::initial_state();
         assert_eq!(Atlas::reduce(&mut state, 2), ["render"]);
         assert_eq!(state, 2);
+    }
+
+    #[test]
+    fn errors_keep_a_stable_category() {
+        let error = FerroError::new(FerroErrorKind::Persistence, "database unavailable");
+        assert_eq!(error.kind(), FerroErrorKind::Persistence);
+        assert!(error.to_string().contains("database unavailable"));
     }
 }

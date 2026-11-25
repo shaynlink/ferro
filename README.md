@@ -100,6 +100,11 @@ native file picker. The generated project links to the checked-out Ferro runtime
 source-checkout developer preview, not yet a published SDK dependency. Windows and Linux remain
 declarable only. Target builds, signing, packaging, and publishing remain roadmap work.
 
+The public developer surface is deliberately small: `ferro-sdk` defines an application reducer and
+typed `FerroError`; target hosts own native UI and dialogues. Optional persistence exposes only
+preferences and recent resources, backed exclusively by LiliaDB. Enable it in a generated macOS
+host with `cargo run -p <app>-macos --features persistence`; no SQLite backend is supported.
+
 ## Roadmap
 
 1. Graduate Windows and Linux to supported native development targets.
