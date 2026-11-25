@@ -53,6 +53,10 @@ ferro-application ---- ferro-state / ferro-design
 ferro-contracts
       |
 target hosts and adapters
+
+ferro-project ---- ferro-sdk
+      |
+ferro CLI and project manifests
 ```
 
 - `ferro-domain` and `ferro-application` are early shared-core prototypes. They must remain free
@@ -62,6 +66,9 @@ target hosts and adapters
   controls.
 - `ferro-state`, `ferro-design`, and `ferro-testkit` support shared application development. The
   design crate contains semantic intent, never a fake universal widget kit.
+- `ferro-sdk` provides the small, platform-neutral public vocabulary shared by project tooling and
+  future target adapters. `ferro-project` owns strict parsing and validation of the versioned
+  `ferro.toml` project contract.
 - `apps/ferro-*` are target-host experiments and reference runtimes, not Ferro's end-user
   application. They may depend on shared crates; they never depend on one another.
 - `tools/ferro-cli` is the seed of the developer experience. It will grow around an explicit
@@ -87,5 +94,6 @@ Development currently starts on macOS because that is the available machine, but
 not proof of a framework target. CI runs Rust quality checks on macOS, Windows, and Linux; each
 future target needs native runtime, packaging, and accessibility validation on its own platform.
 
-The next architectural milestone is not another reference-app screen. It is an explicit Ferro
-project model and CLI/SDK contract that application teams can use to target desktop platforms.
+The project model and its `init`, `doctor`, and target-discovery commands now form the first CLI/SDK
+contract. The next architectural milestone is turning declared desktop targets into supported
+native development and build targets.

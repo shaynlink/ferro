@@ -34,7 +34,7 @@ Read [the framework guide](docs/framework.md) for the intended developer model a
 This repository is an early bootstrap, not a general-purpose SDK release. It currently contains:
 
 - a Rust workspace and cross-OS quality-gate matrix;
-- an embryonic `ferro` developer CLI (`doctor` and storage diagnostics);
+- an embryonic `ferro` developer CLI (`init`, `doctor`, target discovery, and storage diagnostics);
 - shared crates that prove the intended package boundaries;
 - macOS, Windows, and Linux host placeholders, with a small AppKit reference host on macOS;
 - an internal LiliaDB-backed storage experiment.
@@ -80,21 +80,25 @@ cargo test --workspace
 # Inspect the local development environment.
 cargo run -p ferro -- doctor
 
+# Create a portable desktop project scaffold.
+cargo run -p ferro -- init /tmp/atlas
+cargo run -p ferro -- doctor --project /tmp/atlas
+cargo run -p ferro -- target list
+
 # Launch the macOS reference host (not a Ferro application template).
 cargo run -p ferro-macos
 ```
 
-The current CLI is intentionally small. Commands such as project creation, target selection,
-development runtime management, signing, packaging, and publishing are roadmap work, not
-implemented promises.
+`ferro init` creates a Cargo workspace and a strict `ferro.toml` manifest. Its default targets are
+macOS, Windows, and Linux; only the macOS reference host exists today. Development runtime
+management, target builds, signing, packaging, and publishing remain roadmap work.
 
 ## Roadmap
 
-1. Define Ferro's public project model, manifest, SDK surface, and CLI workflow for desktop apps.
-2. Turn the desktop target adapters into supported development and build targets.
-3. Establish a mobile target abstraction and validate iOS and Android with focused native spikes.
-4. Add repeatable packaging, signing, and release workflows per target.
-5. Extend to additional device surfaces only after the core project and target model is stable.
+1. Turn the declared desktop target adapters into supported development and build targets.
+2. Establish a mobile target abstraction and validate iOS and Android with focused native spikes.
+3. Add repeatable packaging, signing, and release workflows per target.
+4. Extend to additional device surfaces only after the core project and target model is stable.
 
 ## License
 
