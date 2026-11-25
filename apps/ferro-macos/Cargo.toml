@@ -15,7 +15,7 @@ path = "src/main.rs"
 ferro-application = { path = "../../crates/ferro-application" }
 ferro-contracts = { path = "../../crates/ferro-contracts" }
 ferro-domain = { path = "../../crates/ferro-domain" }
-ferro-state = { path = "../../crates/ferro-state" }
+ferro-storage = { path = "../../crates/ferro-storage", default-features = false }
 objc2 = "0.6.5"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
@@ -29,4 +29,9 @@ missing_docs = "warn"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
+
+[features]
+default = ["liliadb"]
+liliadb = ["ferro-storage/liliadb"]
+sqlite = ["ferro-storage/sqlite"]
 

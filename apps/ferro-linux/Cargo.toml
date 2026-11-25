@@ -11,10 +11,6 @@ repository.workspace = true
 name = "ferro-linux"
 path = "src/main.rs"
 
-[dependencies]
-ferro-application = { path = "../../crates/ferro-application" }
-ferro-state = { path = "../../crates/ferro-state" }
-
 [lints]
 workspace = true
 

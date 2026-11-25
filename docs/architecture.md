@@ -42,6 +42,10 @@ user intents to domain actions, and returns data that a platform host can presen
 `ferro-contracts` defines ports for system capabilities such as persistence, native file dialogs,
 secure storage, notifications, and background scheduling. Contracts contain no platform type.
 
+`ferro-storage` implements the current recent-workspace persistence port. The default `liliadb`
+feature embeds LiliaDB v0.2 from a pinned `main` revision. Its `sqlite` feature is an intentional
+alternative for interoperability; both features are mutually exclusive.
+
 ### State and design intent
 
 `ferro-state` represents user intents and screen state. `ferro-design` holds semantic intent such
@@ -85,7 +89,6 @@ validation on the target OS, not only cross-compilation.
 
 ## Near-term milestones
 
-1. Implement a local recent-workspace persistence adapter and test it against the shared contract.
-2. Add native file selection and workspace opening to the macOS host.
+1. Add native file selection and workspace opening to the macOS host.
 3. Define the release artifact strategy for `.dmg`, Windows installer/MSIX, and Flatpak.
 4. Perform isolated GTK4 and WinUI feasibility spikes before adding their production host crates.

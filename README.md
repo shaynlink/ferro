@@ -29,6 +29,7 @@ crates/
   ferro-application/ Platform-neutral use cases
   ferro-contracts/   Ports implemented by system adapters
   ferro-state/       Presentation state and user intents
+  ferro-storage/     Persistent LiliaDB or SQLite adapters
   ferro-design/      Semantic design tokens, never widgets
   ferro-testkit/     In-memory adapters and test helpers
 tools/
@@ -44,12 +45,12 @@ implementation strategy.
 ## Status
 
 Ferro is in bootstrap. The Rust workspace, quality gates, CI matrix, CLI foundation, and native
-AppKit workspace-list screen exist. The current screen uses a host-local in-memory adapter; the
-next milestone is durable recent-workspace persistence behind the same shared contract.
+AppKit workspace-list screen exist. Recent workspaces persist in LiliaDB by default; SQLite is an
+explicit alternate feature for deployments that require direct SQLite interoperability.
 
 ## Prerequisites
 
-- Rust 1.88 or newer
+- Rust 1.100 or newer
 - macOS development: a current Xcode installation and command-line tools
 - Windows and Linux development will require their respective native SDKs when their hosts land
 
@@ -68,6 +69,9 @@ cargo run -p ferro -- doctor
 
 # Launch the macOS AppKit host.
 cargo run -p ferro-macos
+
+# Launch the same host with SQLite instead of the default LiliaDB backend.
+cargo run -p ferro-macos --no-default-features --features sqlite
 ```
 
 ## Non-goals
@@ -79,8 +83,7 @@ cargo run -p ferro-macos
 
 ## Roadmap
 
-1. Add persistent adapters and contract tests.
-2. Add native file selection and workspace opening to the macOS host.
+1. Add native file selection and workspace opening to the macOS host.
 3. Validate GTK4/Linux and Windows native hosts through dedicated spikes.
 4. Package, test, and release a desktop beta on all three operating systems.
 

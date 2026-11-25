@@ -2,6 +2,8 @@
 //!
 //! The `AppKit` host intentionally remains separate from the shared application crates.
 
+use std::path::PathBuf;
+
 use objc2::rc::autoreleasepool;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
@@ -13,43 +15,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 use ferro_application::load_recent_workspaces;
 use ferro_contracts::{RecentWorkspaceStore, StoreError};
 use ferro_domain::Workspace;
-
-/// Temporary host-local data source used until the persistent adapter lands.
-struct DemoRecentWorkspaceStore {
-    workspaces: Vec<Workspace>,
-}
-
-impl DemoRecentWorkspaceStore {
-    fn new() -> Self {
-        Self {
-            workspaces: vec![
-                sample_workspace("Ferro", "/Users/shayn/Development/ferro"),
-                sample_workspace("Nvbes", "/Users/shayn/Development/nvbes"),
-                sample_workspace("Worklens", "/Users/shayn/Development/worklens"),
-            ],
-        }
-    }
-}
-
-impl RecentWorkspaceStore for DemoRecentWorkspaceStore {
-    fn recent_workspaces(&self) -> Result<Vec<Workspace>, StoreError> {
-        Ok(self.workspaces.clone())
-    }
-
-    fn remember_workspace(&mut self, workspace: &Workspace) -> Result<(), StoreError> {
-        self.workspaces
-            .retain(|item| item.root() != workspace.root());
-        self.workspaces.insert(0, workspace.clone());
-        Ok(())
-    }
-}
-
-fn sample_workspace(name: &str, root: &str) -> Workspace {
-    match Workspace::new(name, root) {
-        Ok(workspace) => workspace,
-        Err(error) => panic!("the embedded workspace data must be valid: {error}"),
-    }
-}
+use ferro_storage::PersistentRecentWorkspaceStore;
 
 fn main() {
     autoreleasepool(|_| {
@@ -110,8 +76,7 @@ fn build_workspace_list(main_thread: MainThreadMarker) -> objc2::rc::Retained<NS
     ));
     content.addSubview(&subtitle);
 
-    let store = DemoRecentWorkspaceStore::new();
-    match load_recent_workspaces(&store) {
+    match load_workspaces() {
         Ok(model) => {
             let mut origin_y = 456.0;
             for workspace in &model.workspaces {
@@ -123,6 +88,38 @@ fn build_workspace_list(main_thread: MainThreadMarker) -> objc2::rc::Retained<NS
     }
 
     content
+}
+
+fn load_workspaces() -> Result<ferro_application::RecentWorkspaces, StoreError> {
+    let mut store = PersistentRecentWorkspaceStore::open(recent_workspaces_database_path()?)?;
+    let model = load_recent_workspaces(&store)?;
+    if !model.workspaces.is_empty() {
+        return Ok(model);
+    }
+
+    let root = std::env::current_dir().map_err(|error| {
+        StoreError::new(format!("could not locate the current workspace: {error}"))
+    })?;
+    let workspace = Workspace::new("Ferro", root).map_err(|error| {
+        StoreError::new(format!("could not create the initial workspace: {error}"))
+    })?;
+    store.remember_workspace(&workspace)?;
+    load_recent_workspaces(&store)
+}
+
+fn recent_workspaces_database_path() -> Result<PathBuf, StoreError> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| StoreError::new("could not determine the home directory"))?;
+    let filename = if cfg!(feature = "sqlite") {
+        "ferro.sqlite"
+    } else {
+        "ferro.lilia"
+    };
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("Ferro")
+        .join(filename))
 }
 
 fn add_workspace_row(
