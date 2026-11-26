@@ -8,10 +8,11 @@ use ferro_macos_runtime::{
     OpenPanelMode,
 };
 use ferro_storage::LiliaDocumentRepository;
-use objc2::MainThreadMarker;
+use objc2::runtime::AnyObject;
+use objc2::{DefinedClass, MainThreadOnly, MainThreadMarker, define_class, msg_send, sel};
 use objc2::rc::Retained;
-use objc2_app_kit::{NSFont, NSTextField, NSWindow};
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_app_kit::{NSButton, NSFont, NSTextField, NSWindow};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use project_notebook_core::{AppState, Effect, Event, Note, ProjectNotebook, Route};
 
 #[derive(Default)]
@@ -19,6 +20,7 @@ struct NotebookHost {
     status: OnceCell<Retained<NSTextField>>,
     detail: OnceCell<Retained<NSTextField>>,
     sender: OnceCell<MacosEventSender<Event>>,
+    button_router: OnceCell<Retained<ButtonRouter>>,
     repository: RefCell<Option<LiliaDocumentRepository<Note>>>,
 }
 
@@ -30,14 +32,28 @@ impl MacosHost<ProjectNotebook> for NotebookHost {
         title.setFont(Some(&NSFont::systemFontOfSize(28.0)));
         let status = NSTextField::labelWithString(&NSString::from_str("Starting…"), main_thread);
         status.setFrame(NSRect::new(NSPoint::new(32.0, 340.0), NSSize::new(736.0, 24.0)));
-        let detail = NSTextField::labelWithString(&NSString::from_str("Notes · Project · Weather"), main_thread);
+        let detail = NSTextField::labelWithString(&NSString::from_str("Pick a section or attach a folder to start."), main_thread);
         detail.setFrame(NSRect::new(NSPoint::new(32.0, 304.0), NSSize::new(736.0, 24.0)));
+        let router = ButtonRouter::new(main_thread, sender.clone());
+        let open = native_button(main_thread, "Open Project Folder…", &router, sel!(openProject:));
+        open.setFrame(NSRect::new(NSPoint::new(32.0, 244.0), NSSize::new(190.0, 32.0)));
+        let notes = native_button(main_thread, "Notes", &router, sel!(showNotes:));
+        notes.setFrame(NSRect::new(NSPoint::new(32.0, 192.0), NSSize::new(100.0, 30.0)));
+        let project = native_button(main_thread, "Project", &router, sel!(showProject:));
+        project.setFrame(NSRect::new(NSPoint::new(142.0, 192.0), NSSize::new(100.0, 30.0)));
+        let weather = native_button(main_thread, "Weather", &router, sel!(showWeather:));
+        weather.setFrame(NSRect::new(NSPoint::new(252.0, 192.0), NSSize::new(100.0, 30.0)));
         content.addSubview(&title);
         content.addSubview(&status);
         content.addSubview(&detail);
+        content.addSubview(&open);
+        content.addSubview(&notes);
+        content.addSubview(&project);
+        content.addSubview(&weather);
         self.status.set(status).expect("host builds once");
         self.detail.set(detail).expect("host builds once");
         assert!(self.sender.set(sender).is_ok(), "host builds once");
+        assert!(self.button_router.set(router).is_ok(), "host builds once");
     }
 
     fn render(&mut self, state: &AppState) {
@@ -78,3 +94,38 @@ impl MacosHost<ProjectNotebook> for NotebookHost {
 }
 
 fn main() { ferro_macos_runtime::run::<ProjectNotebook, _>(NotebookHost::default()); }
+
+struct ButtonRouterIvars { sender: MacosEventSender<Event> }
+
+define_class!(
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ButtonRouterIvars]
+    struct ButtonRouter;
+
+    unsafe impl NSObjectProtocol for ButtonRouter {}
+
+    impl ButtonRouter {
+        #[unsafe(method(openProject:))]
+        fn open_project(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::ChooseProjectFolder); }
+        #[unsafe(method(showNotes:))]
+        fn show_notes(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::Navigate(Route::Notes)); }
+        #[unsafe(method(showProject:))]
+        fn show_project(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::Navigate(Route::Project)); }
+        #[unsafe(method(showWeather:))]
+        fn show_weather(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::Navigate(Route::Weather)); }
+    }
+);
+
+impl ButtonRouter {
+    fn new(main_thread: MainThreadMarker, sender: MacosEventSender<Event>) -> Retained<Self> {
+        let this = Self::alloc(main_thread).set_ivars(ButtonRouterIvars { sender });
+        // SAFETY: NSObject's `init` has its declared Objective-C signature.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+fn native_button(main_thread: MainThreadMarker, title: &str, target: &ButtonRouter, action: objc2::runtime::Sel) -> Retained<NSButton> {
+    // SAFETY: `ButtonRouter` remains retained by `NotebookHost` and selectors above match its methods.
+    unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(title), Some(&**target), Some(action), main_thread) }
+}
