@@ -159,6 +159,8 @@ pub enum FerroErrorKind {
     Dialog,
     /// Optional persistence could not complete an operation.
     Persistence,
+    /// A native capability was unavailable because the user or system denied permission.
+    Permission,
 }
 
 /// Stable error returned by Ferro's public developer API.

@@ -398,26 +398,26 @@ define_class!(
 
         #[unsafe(method(applicationDidBecomeActive:))]
         fn did_become_active(&self, _notification: &NSNotification) {
-            self.ivars()
-                .driver
-                .borrow_mut()
-                .lifecycle(Lifecycle::Activated);
+            // AppKit may synchronously activate the application while `launched` is still
+            // building the first window. The launch path already establishes initial state, so
+            // an activation delivered during that borrow is redundant and must not panic.
+            if let Ok(mut driver) = self.ivars().driver.try_borrow_mut() {
+                driver.lifecycle(Lifecycle::Activated);
+            }
         }
 
         #[unsafe(method(applicationDidResignActive:))]
         fn did_resign_active(&self, _notification: &NSNotification) {
-            self.ivars()
-                .driver
-                .borrow_mut()
-                .lifecycle(Lifecycle::Deactivated);
+            if let Ok(mut driver) = self.ivars().driver.try_borrow_mut() {
+                driver.lifecycle(Lifecycle::Deactivated);
+            }
         }
 
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _notification: &NSNotification) {
-            self.ivars()
-                .driver
-                .borrow_mut()
-                .lifecycle(Lifecycle::Terminating);
+            if let Ok(mut driver) = self.ivars().driver.try_borrow_mut() {
+                driver.lifecycle(Lifecycle::Terminating);
+            }
         }
     }
 );

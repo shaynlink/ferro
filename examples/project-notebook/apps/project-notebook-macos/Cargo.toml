@@ -1,0 +1,24 @@
+[package]
+name = "project-notebook-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ferro-macos-runtime = { path = "../../../../crates/ferro-macos-runtime" }
+ferro-storage = { path = "../../../../crates/ferro-storage" }
+ferro-contracts = { path = "../../../../crates/ferro-contracts" }
+ferro-sdk = { path = "../../../../crates/ferro-sdk" }
+objc2 = "0.6.5"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+project-notebook-core = { path = "../../crates/project-notebook-core" }
+
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"

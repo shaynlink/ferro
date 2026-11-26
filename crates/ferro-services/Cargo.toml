@@ -1,0 +1,15 @@
+[package]
+name = "ferro-services"
+description = "Portable HTTP, retry, cancellation, and cache primitives for Ferro applications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferro-sdk = { path = "../ferro-sdk" }
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[lints]
+workspace = true

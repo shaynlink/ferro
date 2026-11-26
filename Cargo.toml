@@ -10,6 +10,7 @@ members = [
   "crates/ferro-macos-runtime",
   "crates/ferro-project",
   "crates/ferro-sdk",
+  "crates/ferro-services",
   "crates/ferro-state",
   "crates/ferro-storage",
   "crates/ferro-testkit",
@@ -25,10 +26,12 @@ default-members = [
   "crates/ferro-macos-runtime",
   "crates/ferro-project",
   "crates/ferro-sdk",
+  "crates/ferro-services",
   "crates/ferro-state",
   "tools/ferro-cli",
 ]
 resolver = "3"
+exclude = ["examples/project-notebook"]
 
 [workspace.package]
 edition = "2024"
