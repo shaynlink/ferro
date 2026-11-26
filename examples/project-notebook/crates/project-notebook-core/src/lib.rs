@@ -43,6 +43,10 @@ pub struct AppState {
     pub project_root: Option<PathBuf>,
     /// Loaded notes.
     pub notes: Vec<Note>,
+    /// Note currently edited by the native form.
+    pub draft: Option<Note>,
+    /// Monotonic local identifier used for newly created notes.
+    pub next_note_id: u64,
     /// Status suitable for a native label.
     pub status: String,
 }
@@ -60,6 +64,16 @@ pub enum Event {
     ProjectFolderChosen(Option<PathBuf>),
     /// Repository load finished.
     NotesLoaded(Result<Vec<Note>, String>),
+    /// Start a new editable note.
+    NewNote,
+    /// Replace the draft title from a native text field.
+    UpdateDraftTitle(String),
+    /// Replace the draft body from a native text field.
+    UpdateDraftBody(String),
+    /// Persist the current draft.
+    SaveDraft,
+    /// Persistence completion from the native host.
+    NoteSaved(Result<Note, String>),
 }
 
 /// Work delegated to the macOS host.
@@ -69,6 +83,8 @@ pub enum Effect {
     ChooseProjectFolder,
     /// Open the `LiliaDB` repository below this folder.
     LoadNotes(PathBuf),
+    /// Persist a note through the selected project's document repository.
+    SaveNote(Note),
 }
 
 impl ferro_sdk::Application for ProjectNotebook {
@@ -81,7 +97,7 @@ impl ferro_sdk::Application for ProjectNotebook {
     }
 
     fn initial_state() -> Self::State {
-        AppState { route: Route::Notes, project_root: None, notes: Vec::new(), status: "Choose a project folder to begin".to_owned() }
+        AppState { route: Route::Notes, project_root: None, notes: Vec::new(), draft: None, next_note_id: 1, status: "Choose a project folder to begin".to_owned() }
     }
 
     fn reduce(state: &mut Self::State, event: Self::Event) -> Vec<Self::Effect> {
@@ -96,6 +112,26 @@ impl ferro_sdk::Application for ProjectNotebook {
             }
             Event::NotesLoaded(Ok(notes)) => { state.notes = notes; state.status = format!("{} note(s) loaded", state.notes.len()); Vec::new() }
             Event::NotesLoaded(Err(error)) => { state.status = format!("Could not load notes: {error}"); Vec::new() }
+            Event::NewNote => {
+                state.draft = Some(Note { id: format!("note-{}", state.next_note_id), title: "Untitled note".to_owned(), body: String::new() });
+                state.next_note_id += 1;
+                "Editing a new note".clone_into(&mut state.status);
+                Vec::new()
+            }
+            Event::UpdateDraftTitle(title) => { if let Some(note) = &mut state.draft { note.title = title; } Vec::new() }
+            Event::UpdateDraftBody(body) => { if let Some(note) = &mut state.draft { note.body = body; } Vec::new() }
+            Event::SaveDraft => match (&state.project_root, &state.draft) {
+                (Some(_), Some(note)) => vec![Effect::SaveNote(note.clone())],
+                (None, _) => { "Choose a project folder before saving".clone_into(&mut state.status); Vec::new() }
+                (_, None) => { "Create a note before saving".clone_into(&mut state.status); Vec::new() }
+            },
+            Event::NoteSaved(Ok(note)) => {
+                if let Some(existing) = state.notes.iter_mut().find(|item| item.id == note.id) { *existing = note.clone(); } else { state.notes.push(note.clone()); }
+                state.draft = Some(note);
+                "Note saved locally".clone_into(&mut state.status);
+                Vec::new()
+            }
+            Event::NoteSaved(Err(error)) => { state.status = format!("Could not save note: {error}"); Vec::new() }
         }
     }
 }
@@ -122,5 +158,15 @@ mod tests {
         assert_eq!(ProjectNotebook::reduce(&mut state, Event::ProjectFolderChosen(Some(path.clone()))), vec![Effect::LoadNotes(path)]);
         ProjectNotebook::reduce(&mut state, Event::Navigate(Route::Weather));
         assert_eq!(state.route, Route::Weather);
+    }
+
+    #[test]
+    fn draft_changes_remain_pure_until_save_is_requested() {
+        let mut state = ProjectNotebook::initial_state();
+        ProjectNotebook::reduce(&mut state, Event::NewNote);
+        ProjectNotebook::reduce(&mut state, Event::UpdateDraftTitle("Plan".to_owned()));
+        assert_eq!(state.draft.as_ref().map(|note| note.title.as_str()), Some("Plan"));
+        assert_eq!(ProjectNotebook::reduce(&mut state, Event::SaveDraft), Vec::<Effect>::new());
+        assert!(state.status.contains("Choose a project folder"));
     }
 }

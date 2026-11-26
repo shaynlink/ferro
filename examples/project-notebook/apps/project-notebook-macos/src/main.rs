@@ -19,6 +19,8 @@ use project_notebook_core::{AppState, Effect, Event, Note, ProjectNotebook, Rout
 struct NotebookHost {
     status: OnceCell<Retained<NSTextField>>,
     detail: OnceCell<Retained<NSTextField>>,
+    title_field: OnceCell<Retained<NSTextField>>,
+    body_field: OnceCell<Retained<NSTextField>>,
     sender: OnceCell<MacosEventSender<Event>>,
     button_router: OnceCell<Retained<ButtonRouter>>,
     repository: RefCell<Option<LiliaDocumentRepository<Note>>>,
@@ -43,6 +45,12 @@ impl MacosHost<ProjectNotebook> for NotebookHost {
         project.setFrame(NSRect::new(NSPoint::new(142.0, 192.0), NSSize::new(100.0, 30.0)));
         let weather = native_button(main_thread, "Weather", &router, sel!(showWeather:));
         weather.setFrame(NSRect::new(NSPoint::new(252.0, 192.0), NSSize::new(100.0, 30.0)));
+        let title_field = editable_field(main_thread, &router, sel!(editTitle:), 32.0, 132.0, "Untitled note");
+        let body_field = editable_field(main_thread, &router, sel!(editBody:), 32.0, 92.0, "");
+        let new_note = native_button(main_thread, "New Note", &router, sel!(newNote:));
+        new_note.setFrame(NSRect::new(NSPoint::new(470.0, 132.0), NSSize::new(110.0, 28.0)));
+        let save_note = native_button(main_thread, "Save Note", &router, sel!(saveNote:));
+        save_note.setFrame(NSRect::new(NSPoint::new(590.0, 132.0), NSSize::new(110.0, 28.0)));
         content.addSubview(&title);
         content.addSubview(&status);
         content.addSubview(&detail);
@@ -50,8 +58,14 @@ impl MacosHost<ProjectNotebook> for NotebookHost {
         content.addSubview(&notes);
         content.addSubview(&project);
         content.addSubview(&weather);
+        content.addSubview(&title_field);
+        content.addSubview(&body_field);
+        content.addSubview(&new_note);
+        content.addSubview(&save_note);
         self.status.set(status).expect("host builds once");
         self.detail.set(detail).expect("host builds once");
+        self.title_field.set(title_field).expect("host builds once");
+        self.body_field.set(body_field).expect("host builds once");
         assert!(self.sender.set(sender).is_ok(), "host builds once");
         assert!(self.button_router.set(router).is_ok(), "host builds once");
     }
@@ -62,6 +76,16 @@ impl MacosHost<ProjectNotebook> for NotebookHost {
             let route = match state.route { Route::Notes => "Notes", Route::Project => "Project", Route::Weather => "Weather" };
             let project = state.project_root.as_ref().map_or_else(|| "No project folder".to_owned(), |path| path.display().to_string());
             detail.setStringValue(&NSString::from_str(&format!("{route} · {project}")));
+        }
+        if let Some(note) = &state.draft {
+            if let Some(field) = self.title_field.get()
+                && field.stringValue().to_string() != note.title {
+                field.setStringValue(&NSString::from_str(&note.title));
+            }
+            if let Some(field) = self.body_field.get()
+                && field.stringValue().to_string() != note.body {
+                field.setStringValue(&NSString::from_str(&note.body));
+            }
         }
     }
 
@@ -89,6 +113,12 @@ impl MacosHost<ProjectNotebook> for NotebookHost {
                 let sender = self.sender.get().expect("host is built before effects");
                 sender.dispatch(Event::NotesLoaded(result));
             }
+            Effect::SaveNote(note) => {
+                let result = self.repository.borrow_mut().as_mut()
+                    .ok_or_else(|| "Choose a project folder before saving".to_owned())
+                    .and_then(|repository| repository.upsert(&note).map(|()| note).map_err(|error| error.to_string()));
+                self.sender.get().expect("host is built before effects").dispatch(Event::NoteSaved(result));
+            }
         }
     }
 }
@@ -114,6 +144,14 @@ define_class!(
         fn show_project(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::Navigate(Route::Project)); }
         #[unsafe(method(showWeather:))]
         fn show_weather(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::Navigate(Route::Weather)); }
+        #[unsafe(method(newNote:))]
+        fn new_note(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::NewNote); }
+        #[unsafe(method(saveNote:))]
+        fn save_note(&self, _: &AnyObject) { self.ivars().sender.dispatch(Event::SaveDraft); }
+        #[unsafe(method(editTitle:))]
+        fn edit_title(&self, field: &NSTextField) { self.ivars().sender.dispatch(Event::UpdateDraftTitle(field.stringValue().to_string())); }
+        #[unsafe(method(editBody:))]
+        fn edit_body(&self, field: &NSTextField) { self.ivars().sender.dispatch(Event::UpdateDraftBody(field.stringValue().to_string())); }
     }
 );
 
@@ -128,4 +166,12 @@ impl ButtonRouter {
 fn native_button(main_thread: MainThreadMarker, title: &str, target: &ButtonRouter, action: objc2::runtime::Sel) -> Retained<NSButton> {
     // SAFETY: `ButtonRouter` remains retained by `NotebookHost` and selectors above match its methods.
     unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(title), Some(&**target), Some(action), main_thread) }
+}
+
+fn editable_field(main_thread: MainThreadMarker, target: &ButtonRouter, action: objc2::runtime::Sel, x: f64, y: f64, value: &str) -> Retained<NSTextField> {
+    let field = NSTextField::initWithFrame(NSTextField::alloc(main_thread), NSRect::new(NSPoint::new(x, y), NSSize::new(420.0, 28.0)));
+    field.setStringValue(&NSString::from_str(value));
+    // SAFETY: `ButtonRouter` remains retained by `NotebookHost` for the field lifetime.
+    unsafe { field.setTarget(Some(&**target)); field.setAction(Some(action)); }
+    field
 }
