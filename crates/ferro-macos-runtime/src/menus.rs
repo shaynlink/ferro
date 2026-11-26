@@ -18,6 +18,7 @@ pub(crate) fn build_menu_bar<E: Clone>(
     sections: &[MenuSection<E>],
     legacy_commands: &[MacosCommand<E>],
     router: &AnyObject,
+    include_devtools_menu: bool,
 ) -> (Retained<NSMenu>, Vec<E>) {
     let main_menu = NSMenu::initWithTitle(NSMenu::alloc(main_thread), &NSString::from_str("Main"));
     let mut dispatched = Vec::new();
@@ -50,7 +51,51 @@ pub(crate) fn build_menu_bar<E: Clone>(
         }
     }
 
+    if include_devtools_menu {
+        add_devtools_section(main_thread, &main_menu, router);
+    }
+
     (main_menu, dispatched)
+}
+
+fn add_devtools_section(main_thread: MainThreadMarker, main_menu: &NSMenu, router: &AnyObject) {
+    let submenu = NSMenu::initWithTitle(NSMenu::alloc(main_thread), &NSString::from_str("Debug"));
+    submenu.setAutoenablesItems(false);
+
+    let items = [
+        ("Toggle Ferro DevTools", "d", -1_isize),
+        ("Trigger Hot Reload", "r", -2_isize),
+    ];
+    for (title, key, tag) in items {
+        // SAFETY: `performDevCommand:` is defined on `CommandRouter`, retained by `Driver`.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(main_thread),
+                &NSString::from_str(title),
+                Some(sel!(performDevCommand:)),
+                &NSString::from_str(key),
+            )
+        };
+        item.setTag(tag);
+        item.setKeyEquivalentModifierMask(
+            NSEventModifierFlags::Command.union(NSEventModifierFlags::Option),
+        );
+        // SAFETY: `router` outlives menu interactions while `Driver` runs.
+        unsafe { item.setTarget(Some(router)) };
+        submenu.addItem(&item);
+    }
+
+    // SAFETY: Submenu parent item requires no action selector.
+    let section_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(main_thread),
+            &NSString::from_str("Debug"),
+            None,
+            &NSString::from_str(""),
+        )
+    };
+    section_item.setSubmenu(Some(&submenu));
+    main_menu.addItem(&section_item);
 }
 
 fn add_app_menu(main_thread: MainThreadMarker, main_menu: &NSMenu, app_name: &str) {

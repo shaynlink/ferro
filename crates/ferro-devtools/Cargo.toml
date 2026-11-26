@@ -1,0 +1,21 @@
+[package]
+name = "ferro-devtools"
+description = "Cross-platform developer diagnostics, telemetry, profiling, network inspection, and local debug server for Ferro."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferro-sdk = { path = "../ferro-sdk" }
+ferro-state = { path = "../ferro-state" }
+ferro-testkit = { path = "../ferro-testkit" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

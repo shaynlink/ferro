@@ -3,8 +3,12 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use ferro_devtools::{DevToolsState, NetworkHeader, NetworkTiming, ProfileSummary};
 use ferro_sdk::{FerroError, FerroErrorKind, WindowDescriptor, WindowId};
+use ferro_testkit::UiTree;
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAppearance, NSAppearanceNameAqua,
@@ -148,13 +152,15 @@ pub(crate) trait WindowController {
     fn focus_window(&mut self, id: &WindowId);
     fn set_always_on_top(&mut self, id: &WindowId, always_on_top: bool);
     fn set_title(&mut self, id: &WindowId, title: &str);
+    fn capture_ui_tree(&self, id: &WindowId) -> Option<UiTree>;
 }
 
-/// Runtime access to macOS native capabilities (dialogs, workspace, clipboard, windows).
+/// Runtime access to macOS native capabilities (dialogs, workspace, clipboard, windows, `DevTools`).
 pub struct MacosCapabilities<E> {
     pub(crate) main_thread: MainThreadMarker,
     pub(crate) sender: MacosEventSender<E>,
     pub(crate) windows: Rc<RefCell<dyn WindowController>>,
+    pub(crate) devtools: Arc<Mutex<DevToolsState>>,
 }
 
 impl<E: 'static> MacosCapabilities<E> {
@@ -386,6 +392,62 @@ impl<E: 'static> MacosCapabilities<E> {
             }
         };
         app.setAppearance(appearance.as_deref());
+    }
+
+    /// Captures the live `AppKit` UI node hierarchy for window `id`.
+    #[must_use]
+    pub fn capture_ui_tree(&self, id: &WindowId) -> Option<UiTree> {
+        self.windows.borrow().capture_ui_tree(id)
+    }
+
+    /// Records a custom profiling span in the runtime's `DevTools` profiler.
+    pub fn record_profile_span(&self, name: &str, category: &str, duration: Duration) {
+        if let Ok(mut guard) = self.devtools.lock() {
+            guard.profiler.record_span_with_start(
+                name,
+                category,
+                std::time::Instant::now(),
+                duration,
+            );
+        }
+    }
+
+    /// Returns a snapshot of the runtime's aggregated profiler metrics.
+    #[must_use]
+    pub fn profile_summary(&self) -> Option<ProfileSummary> {
+        self.devtools
+            .lock()
+            .ok()
+            .map(|guard| guard.profiler.summarize())
+    }
+
+    /// Records an application network transaction in the runtime's `NetworkInspector`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_network_transaction(
+        &self,
+        method: &str,
+        url: &str,
+        status: Option<u16>,
+        request_headers: Vec<NetworkHeader>,
+        response_headers: Vec<NetworkHeader>,
+        request_bytes: u64,
+        response_bytes: u64,
+        timing: NetworkTiming,
+        error: Option<String>,
+    ) {
+        if let Ok(mut guard) = self.devtools.lock() {
+            guard.network.record(
+                method,
+                url,
+                status,
+                request_headers,
+                response_headers,
+                request_bytes,
+                response_bytes,
+                timing,
+                error,
+            );
+        }
     }
 }
 

@@ -1,10 +1,17 @@
 //! The Ferro developer command-line interface.
 
+mod ci;
+mod debug;
+mod dev;
+mod http_client;
+mod monitor;
+mod network;
+mod profile;
+mod test_runner;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::thread;
-use std::time::{Duration, SystemTime};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ferro_contracts::WorkspaceMaintenance;
@@ -98,14 +105,34 @@ enum Command {
         #[arg(long, requires = "notarize")]
         notary_profile: Option<String>,
     },
-    /// Build, launch, and restart a native target when its sources change.
-    Dev {
-        /// Project directory containing ferro.toml.
-        #[arg(long, default_value = ".")]
-        project: PathBuf,
-        /// Declared target to develop.
-        #[arg(long, default_value = "macos")]
-        target: Target,
+    /// Build, launch, and hot-reload a native target on source or asset changes.
+    Dev(dev::DevArgs),
+    /// Monitor live CPU, Memory, GPU, Neural Engine, Network, and SSD/Storage usage.
+    Monitor(monitor::MonitorArgs),
+    /// Debug, attach LLDB, inspect bundles, read crash logs, and inspect live `DevTools` state.
+    Debug {
+        #[command(subcommand)]
+        command: debug::DebugCommand,
+    },
+    /// Profile CPU stacks, memory heaps/leaks, Cargo build timings, and binary size.
+    Profile {
+        #[command(subcommand)]
+        command: profile::ProfileCommand,
+    },
+    /// Inspect active sockets, live network traffic, endpoint timings, and `DevTools` HTTP traces.
+    Network {
+        #[command(subcommand)]
+        command: network::NetworkCommand,
+    },
+    /// Run unit tests, UI automation scenarios, and accessibility audits.
+    Test {
+        #[command(subcommand)]
+        command: test_runner::TestCommand,
+    },
+    /// Run project CI gates and generate CI workflows.
+    Ci {
+        #[command(subcommand)]
+        command: ci::CiCommand,
     },
     /// Inspect Ferro target support.
     Target {
@@ -145,10 +172,17 @@ fn main() {
                 output,
                 signing_identity: sign,
                 target_triple: None,
+                features: Vec::new(),
             },
         )
         .map(|bundle| println!("Built {}", bundle.path.display())),
-        Command::Dev { project, target } => develop_project(&project, target),
+        Command::Dev(args) => dev::run(&args),
+        Command::Monitor(args) => monitor::run(&args),
+        Command::Debug { command } => debug::run(command),
+        Command::Profile { command } => profile::run(command),
+        Command::Network { command } => network::run(command),
+        Command::Test { command } => test_runner::run(command),
+        Command::Ci { command } => ci::run(command),
         Command::Package {
             target,
             project,
@@ -295,11 +329,20 @@ fn doctor(project: &Path) -> Result<(), String> {
             &["--find", "hdiutil"],
             &mut failures,
         );
+        inspect_optional_tool("Debugger (LLDB)", "lldb", &["--version"]);
+        inspect_optional_tool("Instruments CLI", "xcrun", &["--find", "xctrace"]);
+        inspect_optional_tool("CPU Sampler", "which", &["sample"]);
+        inspect_optional_tool("Memory Leaks", "which", &["leaks"]);
+        inspect_optional_tool("VM Map", "which", &["vmmap"]);
+        inspect_optional_tool("Network Traffic", "which", &["nettop"]);
+        inspect_optional_tool("IORegistry", "which", &["ioreg"]);
     } else {
         failures.push("macOS builds require a macOS host with Xcode".to_owned());
         println!("- Xcode: unavailable (macOS host required)");
         println!("- Code signing: unavailable (macOS host required)");
     }
+    inspect_optional_tool("Cargo Nextest", "cargo", &["nextest", "--version"]);
+    inspect_optional_tool("Cargo Watch", "cargo", &["watch", "--version"]);
 
     let manifest_path = project.join("ferro.toml");
     match ProjectManifest::load(&manifest_path) {
@@ -402,11 +445,12 @@ impl PackageFormat {
 }
 
 #[derive(Clone, Debug, Default)]
-struct BuildOptions {
-    release: bool,
-    output: Option<PathBuf>,
-    signing_identity: Option<String>,
-    target_triple: Option<&'static str>,
+pub(crate) struct BuildOptions {
+    pub(crate) release: bool,
+    pub(crate) output: Option<PathBuf>,
+    pub(crate) signing_identity: Option<String>,
+    pub(crate) target_triple: Option<&'static str>,
+    pub(crate) features: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -421,12 +465,12 @@ struct PackageOptions {
 }
 
 #[derive(Clone, Debug)]
-struct BuiltBundle {
-    path: PathBuf,
-    executable: PathBuf,
+pub(crate) struct BuiltBundle {
+    pub(crate) path: PathBuf,
+    pub(crate) executable: PathBuf,
 }
 
-fn build_project(
+pub(crate) fn build_project(
     project: &Path,
     target: Target,
     options: BuildOptions,
@@ -438,6 +482,9 @@ fn build_project(
         .map_or_else(|| format!("{slug}-{target}"), str::to_owned);
     let mut command = ProcessCommand::new("cargo");
     command.args(["build", "--package", &package]);
+    if !options.features.is_empty() {
+        command.args(["--features", &options.features.join(",")]);
+    }
     if let Some(target_triple) = options.target_triple {
         command.args(["--target", target_triple]);
         command.env("RUSTFLAGS", "-C target-cpu=apple-m1");
@@ -540,8 +587,8 @@ fn package_project(
         BuildOptions {
             release: true,
             output: Some(bundle_output),
-            signing_identity: None,
             target_triple: Some(options.arch.target_triple()),
+            ..BuildOptions::default()
         },
     )?;
     prepare_distribution_bundle(&bundle, &icon, &resources, version, build_number)?;
@@ -877,7 +924,10 @@ fn run_checked(command: &mut ProcessCommand, context: &str) -> Result<(), String
     }
 }
 
-fn load_macos_project(project: &Path, target: Target) -> Result<(ProjectManifest, String), String> {
+pub(crate) fn load_macos_project(
+    project: &Path,
+    target: Target,
+) -> Result<(ProjectManifest, String), String> {
     let manifest_path = project.join("ferro.toml");
     let manifest = ProjectManifest::load(&manifest_path).map_err(|error| error.to_string())?;
     if !manifest.targets().contains(&target) {
@@ -917,7 +967,7 @@ fn resolve_macos_host_dir(project: &Path, slug: &str) -> Option<PathBuf> {
         .find(|dir| dir.join("Cargo.toml").is_file() && dir.join("src/main.rs").is_file())
 }
 
-fn cargo_target_directory(project: &Path) -> PathBuf {
+pub(crate) fn cargo_target_directory(project: &Path) -> PathBuf {
     if let Ok(output) = ProcessCommand::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .current_dir(project)
@@ -931,53 +981,6 @@ fn cargo_target_directory(project: &Path) -> PathBuf {
         return PathBuf::from(dir);
     }
     project.join("target")
-}
-
-fn develop_project(project: &Path, target: Target) -> Result<(), String> {
-    let mut bundle = build_project(project, target, BuildOptions::default())?;
-    println!("Launching {}", bundle.path.display());
-    let mut child = launch_bundle(&bundle, project)?;
-    let mut fingerprint = watch_fingerprint(project)?;
-
-    loop {
-        thread::sleep(Duration::from_millis(300));
-        let next = watch_fingerprint(project)?;
-        if next != fingerprint {
-            fingerprint = next;
-            println!("Change detected; rebuilding macOS application…");
-            match build_project(project, target, BuildOptions::default()) {
-                Ok(next_bundle) => {
-                    if child
-                        .try_wait()
-                        .map_err(|error| error.to_string())?
-                        .is_none()
-                    {
-                        child
-                            .kill()
-                            .map_err(|error| format!("could not stop application: {error}"))?;
-                        child
-                            .wait()
-                            .map_err(|error| format!("could not wait for application: {error}"))?;
-                    }
-                    bundle = next_bundle;
-                    println!("Restarting {}", bundle.path.display());
-                    child = launch_bundle(&bundle, project)?;
-                }
-                Err(error) => {
-                    eprintln!(
-                        "ferro dev: rebuild failed; keeping the running application: {error}"
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn launch_bundle(bundle: &BuiltBundle, project: &Path) -> Result<std::process::Child, String> {
-    ProcessCommand::new(&bundle.executable)
-        .current_dir(project)
-        .spawn()
-        .map_err(|error| format!("could not launch {}: {error}", bundle.path.display()))
 }
 
 fn assemble_macos_bundle(
@@ -1090,7 +1093,7 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn safe_bundle_name(name: &str) -> String {
+pub(crate) fn safe_bundle_name(name: &str) -> String {
     let name = name
         .chars()
         .map(|character| match character {
@@ -1103,67 +1106,6 @@ fn safe_bundle_name(name: &str) -> String {
     } else {
         name
     }
-}
-
-fn watch_fingerprint(project: &Path) -> Result<Vec<(PathBuf, SystemTime, u64)>, String> {
-    let mut entries = Vec::new();
-    collect_watch_entries(project, project, &mut entries)?;
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(entries)
-}
-
-fn collect_watch_entries(
-    root: &Path,
-    directory: &Path,
-    entries: &mut Vec<(PathBuf, SystemTime, u64)>,
-) -> Result<(), String> {
-    for entry in fs::read_dir(directory)
-        .map_err(|error| format!("could not inspect `{}`: {error}", directory.display()))?
-    {
-        let entry = entry.map_err(|error| format!("could not inspect project file: {error}"))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("could not inspect `{}`: {error}", path.display()))?;
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            let name = entry.file_name();
-            if name == "target"
-                || name == ".git"
-                || name == "node_modules"
-                || name == ".nx"
-                || name == "dist"
-            {
-                continue;
-            }
-            collect_watch_entries(root, &path, entries)?;
-        } else if file_type.is_file() && watched_file(root, &path) {
-            let metadata = entry
-                .metadata()
-                .map_err(|error| format!("could not inspect `{}`: {error}", path.display()))?;
-            entries.push((
-                path.strip_prefix(root).unwrap_or(&path).to_owned(),
-                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                metadata.len(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn watched_file(root: &Path, path: &Path) -> bool {
-    if path.extension().is_some_and(|extension| extension == "rs") {
-        return true;
-    }
-    matches!(
-        path.strip_prefix(root)
-            .ok()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str()),
-        Some("Cargo.toml" | "Cargo.lock" | "ferro.toml")
-    )
 }
 
 fn inspect_tool(label: &str, tool: &str, arguments: &[&str], failures: &mut Vec<String>) {
@@ -1183,6 +1125,17 @@ fn inspect_tool(label: &str, tool: &str, arguments: &[&str], failures: &mut Vec<
             println!("- {label}: unavailable ({error})");
             failures.push(message);
         }
+    }
+}
+
+fn inspect_optional_tool(label: &str, tool: &str, arguments: &[&str]) {
+    match ProcessCommand::new(tool).args(arguments).output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let version = stdout.lines().next().unwrap_or("available").trim();
+            println!("- {label}: {version}");
+        }
+        _ => println!("- {label}: optional (not installed)"),
     }
 }
 
@@ -1401,9 +1354,9 @@ mod tests {
     use ferro_project::ProjectManifest;
 
     use super::{
-        Cli, Command, assemble_macos_bundle, init_project, load_macos_project, macos_info_plist,
-        prepare_distribution_bundle, project_slug, resolve_macos_host_dir, safe_bundle_name,
-        watch_fingerprint,
+        Cli, Command, assemble_macos_bundle, dev, init_project, load_macos_project,
+        macos_info_plist, prepare_distribution_bundle, project_slug, resolve_macos_host_dir,
+        safe_bundle_name,
     };
 
     #[test]
@@ -1504,10 +1457,24 @@ mod tests {
         assert_eq!(sign.as_deref(), Some("Developer ID Application: Atlas"));
 
         let cli = Cli::try_parse_from(["ferro", "dev"]).expect("parse dev command");
-        let Command::Dev { target, .. } = cli.command else {
+        let Command::Dev(args) = cli.command else {
             panic!("expected dev command");
         };
-        assert_eq!(target, ferro_sdk::Target::Macos);
+        assert_eq!(args.target, ferro_sdk::Target::Macos);
+    }
+
+    #[test]
+    fn parses_new_developer_tool_commands() {
+        assert!(
+            Cli::try_parse_from(["ferro", "monitor", "--section", "neural-engine", "--json"])
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(["ferro", "debug", "inspect"]).is_ok());
+        assert!(Cli::try_parse_from(["ferro", "profile", "build", "--release"]).is_ok());
+        assert!(Cli::try_parse_from(["ferro", "network", "connections", "--listening"]).is_ok());
+        assert!(Cli::try_parse_from(["ferro", "network", "probe", "https://example.com"]).is_ok());
+        assert!(Cli::try_parse_from(["ferro", "test", "ui", "--tree", "tree.json"]).is_ok());
+        assert!(Cli::try_parse_from(["ferro", "ci", "check", "--github-annotations"]).is_ok());
     }
 
     #[test]
@@ -1643,7 +1610,8 @@ mod tests {
         std::fs::write(directory.path().join("target/generated.rs"), "ignored")
             .expect("target artifact");
 
-        let fingerprint = watch_fingerprint(directory.path()).expect("fingerprint");
+        let fingerprint =
+            dev::collect_dev_fingerprint(directory.path(), None).expect("fingerprint");
         assert_eq!(fingerprint.len(), 2);
     }
 

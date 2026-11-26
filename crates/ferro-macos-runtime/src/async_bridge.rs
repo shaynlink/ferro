@@ -24,7 +24,7 @@ pub(crate) fn clear_main_flusher() {
     });
 }
 
-fn invoke_main_flusher() {
+pub(crate) fn invoke_main_flusher() {
     MAIN_FLUSHER.with(|cell| {
         if let Ok(mut guard) = cell.try_borrow_mut()
             && let Some(flusher) = guard.as_mut()

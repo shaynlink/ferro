@@ -53,16 +53,18 @@ crates/
   ferro-domain/      shared types and invariants prototype
   ferro-application/ shared use-case prototype
   ferro-contracts/   target-service boundaries
-  ferro-state/       shared state primitives
+  ferro-state/       shared state primitives and time-travel store
   ferro-design/      semantic design intent, never a widget kit
+  ferro-devtools/    diagnostics, telemetry, profiling, network inspect, local server
   ferro-storage/     internal persistence experiment
-  ferro-testkit/     reusable test doubles and fixtures
+  ferro-testkit/     reusable test doubles, UI tree, accessibility audit, automation harness
 tools/
-  ferro-cli/         developer-facing command foundation
-  xtask/             repository automation
+  ferro-cli/         developer-facing CLI (build, dev hot-reload, debug, profile, network, test, ci, monitor)
+  xtask/             repository CI, policy audit, and smoke automation
 docs/
   framework.md       developer-platform model and roadmap
   architecture.md    package and target boundaries
+  devtools.md        debugging, hot-reload, profiling, testing, CI, network, and telemetry guide
   storage.md         status of the internal storage experiment
 ```
 
@@ -87,6 +89,17 @@ cargo run -p ferro -- run --project /tmp/atlas
 
 # Inspect every target known by this Ferro version.
 cargo run -p ferro -- target list
+
+# Monitor CPU, memory, GPU, Neural Engine, network, and SSD/storage telemetry.
+cargo run -p ferro -- monitor --section all --project .
+
+# Debug, profile, inspect network traffic, run UI/unit tests, and run CI gates.
+cargo run -p ferro -- debug inspect --project /tmp/atlas
+cargo run -p ferro -- profile build --project /tmp/atlas
+cargo run -p ferro -- network connections --listening
+cargo run -p ferro -- test all --project /tmp/atlas
+cargo run -p ferro -- ci check --project /tmp/atlas
+cargo run -p xtask -- ci
 
 # Launch the repository's AppKit reference host (not a Ferro application template).
 cargo run -p ferro-macos

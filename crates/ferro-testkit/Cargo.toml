@@ -1,6 +1,6 @@
 [package]
 name = "ferro-testkit"
-description = "Shared in-memory adapters and test helpers for Ferro."
+description = "Shared in-memory adapters, UI tree inspection, and automation testing helpers for Ferro."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,9 @@ repository.workspace = true
 [dependencies]
 ferro-contracts = { path = "../ferro-contracts" }
 ferro-domain = { path = "../ferro-domain" }
+ferro-sdk = { path = "../ferro-sdk" }
+ferro-state = { path = "../ferro-state" }
+serde = { version = "1.0.228", features = ["derive"] }
 
 [lints]
 workspace = true
-
