@@ -15,14 +15,17 @@ preview-webview = ["dep:objc2-web-kit", "dep:block2"]
 [dependencies]
 block2 = { version = "0.6.2", optional = true }
 dispatch2 = "0.3.1"
+ferro-devtools = { path = "../ferro-devtools" }
 ferro-sdk = { path = "../ferro-sdk" }
 ferro-state = { path = "../ferro-state" }
+ferro-testkit = { path = "../ferro-testkit" }
 objc2 = "0.6.5"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-metal = { version = "0.3.2", optional = true }
 objc2-quartz-core = "0.3.2"
 objc2-web-kit = { version = "0.3.2", optional = true }
+serde_json = "1.0.145"
 
 [lints.rust]
 # AppKit and WebKit construction crosses an FFI boundary. Keep unsafe isolated to this runtime crate.

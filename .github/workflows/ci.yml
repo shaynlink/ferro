@@ -22,11 +22,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --check
+      - run: cargo run -p xtask -- audit
       - run: cargo clippy --workspace --all-targets -- -D warnings
         if: runner.os == 'macOS'
       - run: cargo test --workspace
         if: runner.os == 'macOS'
-      - name: Verify generated macOS bundle
+      - name: Verify generated macOS bundle and Dev/CI tooling
         if: runner.os == 'macOS'
         run: |
           project="$RUNNER_TEMP/ferro-cli-bundle"
@@ -34,7 +35,13 @@ jobs:
           cargo run -p ferro -- build macos --project "$project"
           plutil -lint "$project/target/ferro/macos/debug/ferro-cli-bundle.app/Contents/Info.plist"
           test -f "$project/target/ferro/macos/debug/ferro-cli-bundle.app/Contents/MacOS/ferro-cli-bundle-macos"
+          cargo run -p ferro -- debug inspect --project "$project"
+          cargo run -p ferro -- ci init --project "$project"
+          cargo run -p xtask -- smoke
       - run: cargo clippy --workspace --exclude ferro-macos --exclude ferro-macos-runtime --all-targets -- -D warnings
         if: runner.os != 'macOS'
       - run: cargo test --workspace --exclude ferro-macos --exclude ferro-macos-runtime
         if: runner.os != 'macOS'
+      - name: Verify cross-platform telemetry and UI automation CLI
+        if: runner.os != 'macOS'
+        run: cargo run -p xtask -- smoke

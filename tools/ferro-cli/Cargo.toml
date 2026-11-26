@@ -14,9 +14,12 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.5.54", features = ["derive"] }
 ferro-contracts = { path = "../../crates/ferro-contracts" }
+ferro-devtools = { path = "../../crates/ferro-devtools" }
 ferro-project = { path = "../../crates/ferro-project" }
 ferro-sdk = { path = "../../crates/ferro-sdk" }
 ferro-storage = { path = "../../crates/ferro-storage" }
+ferro-testkit = { path = "../../crates/ferro-testkit" }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 
 [dev-dependencies]
@@ -24,4 +27,3 @@ tempfile = "3.27.0"
 
 [lints]
 workspace = true
-

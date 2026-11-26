@@ -369,9 +369,12 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ferro-contracts",
+ "ferro-devtools",
  "ferro-project",
  "ferro-sdk",
  "ferro-storage",
+ "ferro-testkit",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -396,6 +399,18 @@ dependencies = [
 [[package]]
 name = "ferro-design"
 version = "0.1.0"
+
+[[package]]
+name = "ferro-devtools"
+version = "0.1.0"
+dependencies = [
+ "ferro-sdk",
+ "ferro-state",
+ "ferro-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "ferro-domain"
@@ -424,14 +439,17 @@ version = "0.1.0"
 dependencies = [
  "block2",
  "dispatch2",
+ "ferro-devtools",
  "ferro-sdk",
  "ferro-state",
+ "ferro-testkit",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-metal",
  "objc2-quartz-core",
  "objc2-web-kit",
+ "serde_json",
 ]
 
 [[package]]
@@ -482,6 +500,9 @@ version = "0.1.0"
 dependencies = [
  "ferro-contracts",
  "ferro-domain",
+ "ferro-sdk",
+ "ferro-state",
+ "serde",
 ]
 
 [[package]]
@@ -2339,6 +2360,9 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xtask"
 version = "0.1.0"
+dependencies = [
+ "clap",
+]
 
 [[package]]
 name = "yoke"

@@ -146,6 +146,8 @@ pub enum Lifecycle {
     Terminating,
     /// The system appearance (e.g. Light/Dark) changed.
     AppearanceChanged,
+    /// A development hot-reload signal or asset update arrived.
+    Reloaded,
 }
 
 /// Public category for a failure reported by Ferro services or runtimes.
