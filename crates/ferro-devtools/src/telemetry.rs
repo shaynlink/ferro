@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -321,13 +323,16 @@ pub struct SystemTelemetrySnapshot {
     pub target_process: Option<ProcessTelemetry>,
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[derive(Clone, Debug)]
 struct NetBaseline {
     captured_at: Instant,
     interfaces: BTreeMap<String, (u64, u64)>,
+    #[cfg(target_os = "macos")]
     processes: BTreeMap<u32, (u64, u64)>,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug)]
 struct DiskBaseline {
     captured_at: Instant,
@@ -340,7 +345,9 @@ struct DiskBaseline {
 /// Stateful telemetry collector that computes accurate network and disk I/O throughput deltas.
 #[derive(Debug, Default)]
 pub struct TelemetryCollector {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     prev_net: Option<NetBaseline>,
+    #[cfg(target_os = "macos")]
     prev_disk: Option<DiskBaseline>,
     #[cfg(target_os = "linux")]
     prev_cpu: Option<LinuxCpuTicks>,
@@ -782,33 +789,32 @@ struct LinuxCpuTicks {
 }
 
 #[cfg(target_os = "linux")]
+fn prime_linux_baselines(collector: &mut TelemetryCollector, sample_window: Duration) {
+    if collector.prev_cpu.is_some() || sample_window.is_zero() {
+        return;
+    }
+    if let Ok(stat) = std::fs::read_to_string("/proc/stat") {
+        collector.prev_cpu = parse_proc_stat(&stat);
+    }
+    if let Ok(net) = std::fs::read_to_string("/proc/net/dev") {
+        let interfaces = parse_proc_net_dev(&net)
+            .into_iter()
+            .map(|iface| (iface.name, (iface.rx_bytes, iface.tx_bytes)))
+            .collect();
+        collector.prev_net = Some(NetBaseline {
+            captured_at: Instant::now(),
+            interfaces,
+        });
+    }
+    std::thread::sleep(sample_window.min(Duration::from_millis(500)));
+}
+
+#[cfg(target_os = "linux")]
 #[allow(
     clippy::cast_precision_loss,
     reason = "CPU tick deltas fit cleanly in f64 percentages"
 )]
-fn collect_platform_snapshot(
-    collector: &mut TelemetryCollector,
-    target_pid: Option<u32>,
-    sample_window: Duration,
-) -> SystemTelemetrySnapshot {
-    if collector.prev_cpu.is_none() && !sample_window.is_zero() {
-        if let Ok(stat) = std::fs::read_to_string("/proc/stat") {
-            collector.prev_cpu = parse_proc_stat(&stat);
-        }
-        if let Ok(net) = std::fs::read_to_string("/proc/net/dev") {
-            let parsed = parse_proc_net_dev(&net);
-            collector.prev_net = Some(NetBaseline {
-                captured_at: Instant::now(),
-                interfaces: parsed
-                    .into_iter()
-                    .map(|iface| (iface.name, (iface.rx_bytes, iface.tx_bytes)))
-                    .collect(),
-                processes: BTreeMap::new(),
-            });
-        }
-        std::thread::sleep(sample_window.min(Duration::from_millis(500)));
-    }
-
+fn collect_linux_cpu(collector: &mut TelemetryCollector) -> CpuTelemetry {
     let cpu_info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     let brand = cpu_info
         .lines()
@@ -819,20 +825,21 @@ fn collect_platform_snapshot(
         })
         .unwrap_or_else(|| "Linux CPU".to_owned());
     let logical_cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    let (load_avg_1m, load_avg_5m, load_avg_15m) = std::fs::read_to_string("/proc/loadavg")
-        .ok()
-        .map_or((0.0, 0.0, 0.0), |raw| {
-            let parts: Vec<f64> = raw
-                .split_whitespace()
-                .take(3)
-                .filter_map(|p| p.parse::<f64>().ok())
-                .collect();
-            (
-                *parts.first().unwrap_or(&0.0),
-                *parts.get(1).unwrap_or(&0.0),
-                *parts.get(2).unwrap_or(&0.0),
-            )
-        });
+    let (one_min, five_min, fifteen_min) =
+        std::fs::read_to_string("/proc/loadavg")
+            .ok()
+            .map_or((0.0, 0.0, 0.0), |raw| {
+                let parts: Vec<f64> = raw
+                    .split_whitespace()
+                    .take(3)
+                    .filter_map(|p| p.parse::<f64>().ok())
+                    .collect();
+                (
+                    *parts.first().unwrap_or(&0.0),
+                    *parts.get(1).unwrap_or(&0.0),
+                    *parts.get(2).unwrap_or(&0.0),
+                )
+            });
 
     let mut user_percent = 0.0;
     let mut system_percent = 0.0;
@@ -841,33 +848,53 @@ fn collect_platform_snapshot(
         && let Some(curr) = parse_proc_stat(&stat)
     {
         if let Some(prev) = collector.prev_cpu {
-            let du = (curr.user + curr.nice).saturating_sub(prev.user + prev.nice);
-            let ds = (curr.system + curr.irq + curr.softirq)
+            let user_delta = (curr.user + curr.nice).saturating_sub(prev.user + prev.nice);
+            let kernel_delta = (curr.system + curr.irq + curr.softirq)
                 .saturating_sub(prev.system + prev.irq + prev.softirq);
-            let di = (curr.idle + curr.iowait).saturating_sub(prev.idle + prev.iowait);
-            let total = (du + ds + di).max(1) as f64;
-            user_percent = (du as f64 / total) * 100.0;
-            system_percent = (ds as f64 / total) * 100.0;
-            idle_percent = (di as f64 / total) * 100.0;
+            let idle_delta = (curr.idle + curr.iowait).saturating_sub(prev.idle + prev.iowait);
+            let total_ticks = (user_delta + kernel_delta + idle_delta).max(1) as f64;
+            user_percent = (user_delta as f64 / total_ticks) * 100.0;
+            system_percent = (kernel_delta as f64 / total_ticks) * 100.0;
+            idle_percent = (idle_delta as f64 / total_ticks) * 100.0;
         }
         collector.prev_cpu = Some(curr);
     }
 
-    let memory = std::fs::read_to_string("/proc/meminfo")
-        .map(|raw| parse_proc_meminfo(&raw))
-        .unwrap_or_default();
+    CpuTelemetry {
+        brand,
+        logical_cores,
+        physical_cores: logical_cores,
+        performance_cores: None,
+        efficiency_cores: None,
+        user_percent,
+        system_percent,
+        idle_percent,
+        total_percent: (user_percent + system_percent).clamp(0.0, 100.0),
+        load_avg_1m: one_min,
+        load_avg_5m: five_min,
+        load_avg_15m: fifteen_min,
+        source: "/proc".to_owned(),
+    }
+}
 
-    let mut interfaces = std::fs::read_to_string("/proc/net/dev")
-        .map(|raw| parse_proc_net_dev(&raw))
-        .unwrap_or_default();
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "byte deltas and millisecond intervals fit safely in f64 for throughput display"
+)]
+fn collect_linux_network(collector: &mut TelemetryCollector) -> NetworkUsageTelemetry {
+    let mut interfaces =
+        std::fs::read_to_string("/proc/net/dev").map_or_default(|raw| parse_proc_net_dev(&raw));
     let now = Instant::now();
     if let Some(prev) = &collector.prev_net {
         let elapsed = now.duration_since(prev.captured_at).as_secs_f64();
         if elapsed > 0.01 {
             for iface in &mut interfaces {
-                if let Some(&(prx, ptx)) = prev.interfaces.get(&iface.name) {
-                    iface.rx_bytes_per_sec = (iface.rx_bytes.saturating_sub(prx) as f64) / elapsed;
-                    iface.tx_bytes_per_sec = (iface.tx_bytes.saturating_sub(ptx) as f64) / elapsed;
+                if let Some(&(prev_in, prev_out)) = prev.interfaces.get(&iface.name) {
+                    iface.rx_bytes_per_sec =
+                        (iface.rx_bytes.saturating_sub(prev_in) as f64) / elapsed;
+                    iface.tx_bytes_per_sec =
+                        (iface.tx_bytes.saturating_sub(prev_out) as f64) / elapsed;
                 }
             }
         }
@@ -878,53 +905,57 @@ fn collect_platform_snapshot(
             .iter()
             .map(|iface| (iface.name.clone(), (iface.rx_bytes, iface.tx_bytes)))
             .collect(),
-        processes: BTreeMap::new(),
     });
-    let total_rx_bytes = interfaces
+    let received_bytes = interfaces
         .iter()
         .filter(|iface| iface.name != "lo")
         .map(|iface| iface.rx_bytes)
         .sum();
-    let total_tx_bytes = interfaces
+    let transmitted_bytes = interfaces
         .iter()
         .filter(|iface| iface.name != "lo")
         .map(|iface| iface.tx_bytes)
         .sum();
-    let total_rx_bytes_per_sec = interfaces
+    let received_rate = interfaces
         .iter()
         .filter(|iface| iface.name != "lo")
         .map(|iface| iface.rx_bytes_per_sec)
         .sum();
-    let total_tx_bytes_per_sec = interfaces
+    let transmitted_rate = interfaces
         .iter()
         .filter(|iface| iface.name != "lo")
         .map(|iface| iface.tx_bytes_per_sec)
         .sum();
 
-    let volumes = run_command_stdout("df", &["-kP"])
-        .map(|raw| parse_df_k(&raw, false))
-        .unwrap_or_default();
+    NetworkUsageTelemetry {
+        interfaces,
+        total_rx_bytes: received_bytes,
+        total_tx_bytes: transmitted_bytes,
+        total_rx_bytes_per_sec: received_rate,
+        total_tx_bytes_per_sec: transmitted_rate,
+        top_processes: Vec::new(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn collect_platform_snapshot(
+    collector: &mut TelemetryCollector,
+    target_pid: Option<u32>,
+    sample_window: Duration,
+) -> SystemTelemetrySnapshot {
+    prime_linux_baselines(collector, sample_window);
+    let cpu = collect_linux_cpu(collector);
+    let memory =
+        std::fs::read_to_string("/proc/meminfo").map_or_default(|raw| parse_proc_meminfo(&raw));
+    let network = collect_linux_network(collector);
+    let volumes = run_command_stdout("df", &["-kP"]).map_or_default(|raw| parse_df_k(&raw, false));
 
     SystemTelemetrySnapshot {
         timestamp_ms: now_ms(),
         os: std::env::consts::OS.to_owned(),
         arch: std::env::consts::ARCH.to_owned(),
         hostname: detect_hostname(),
-        cpu: CpuTelemetry {
-            brand,
-            logical_cores,
-            physical_cores: logical_cores,
-            performance_cores: None,
-            efficiency_cores: None,
-            user_percent,
-            system_percent,
-            idle_percent,
-            total_percent: (user_percent + system_percent).clamp(0.0, 100.0),
-            load_avg_1m,
-            load_avg_5m,
-            load_avg_15m,
-            source: "/proc".to_owned(),
-        },
+        cpu,
         memory,
         gpu: GpuTelemetry {
             available: false,
@@ -937,14 +968,7 @@ fn collect_platform_snapshot(
             note: Some("Apple Neural Engine telemetry is macOS Apple Silicon only".to_owned()),
             ..NeuralEngineTelemetry::default()
         },
-        network: NetworkUsageTelemetry {
-            interfaces,
-            total_rx_bytes,
-            total_tx_bytes,
-            total_rx_bytes_per_sec,
-            total_tx_bytes_per_sec,
-            top_processes: Vec::new(),
-        },
+        network,
         storage: StorageTelemetry {
             volumes,
             io_stats: Vec::new(),
